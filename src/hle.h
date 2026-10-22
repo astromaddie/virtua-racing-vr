@@ -136,4 +136,17 @@ int hle_scene_count(void);
    is finished the SH2s' picture is shown. */
 void hle_reset(void);
 
+#ifdef VRDE_VR
+/* An immutable, unprojected scene, shared by both eyes. Coordinates are right/up/
+   forward in original world units, before any screen clipping or backface rejection. */
+#define HLE_VR_MAX_VERTICES (65536 * 3)
+typedef struct { float x, y, z; uint32_t colour; } hle_vr_vertex_t;
+typedef struct {
+    int count, overflow, scene;
+    float native_pitch, native_roll, car_length;
+    hle_vr_vertex_t vertices[HLE_VR_MAX_VERTICES];
+} hle_vr_mesh_t;
+const hle_vr_mesh_t *hle_vr_prepare(double fraction);
+#endif
+
 #endif

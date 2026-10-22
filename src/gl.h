@@ -47,6 +47,7 @@ static int gl_load_functions(void) { return 1; }
   X(PFNGLRENDERBUFFERSTORAGEPROC, glRenderbufferStorage) \
   X(PFNGLRENDERBUFFERSTORAGEMULTISAMPLEPROC, glRenderbufferStorageMultisample) \
   X(PFNGLSHADERSOURCEPROC, glShaderSource) \
+  X(PFNGLUNIFORMMATRIX4FVPROC, glUniformMatrix4fv) \
   X(PFNGLUNIFORM1FPROC, glUniform1f) \
   X(PFNGLUNIFORM1IPROC, glUniform1i) \
   X(PFNGLUNIFORM2FPROC, glUniform2f) \
@@ -100,6 +101,7 @@ static int gl_load_functions(void)
 #define glRenderbufferStorage vrde_glRenderbufferStorage
 #define glRenderbufferStorageMultisample vrde_glRenderbufferStorageMultisample
 #define glShaderSource vrde_glShaderSource
+#define glUniformMatrix4fv vrde_glUniformMatrix4fv
 #define glUniform1f vrde_glUniform1f
 #define glUniform1i vrde_glUniform1i
 #define glUniform2f vrde_glUniform2f

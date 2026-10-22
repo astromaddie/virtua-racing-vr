@@ -78,4 +78,24 @@ if "$tmp/missing-probe/launch-openxr-probe.sh" >"$tmp/missing-probe.out" 2>&1; t
 fi
 rg -q 'OpenXR colour probe is missing' "$tmp/missing-probe.out" || fail "missing probe error was unclear"
 
+cp "$root/packaging/launch_vr.sh" "$tmp/package/launch-vr.sh"
+cat > "$tmp/package/vrde-vr" <<'EOFVR'
+#!/usr/bin/env sh
+printf '%s\n' "$PWD" "$@" > "$GAME_LOG"
+printf '%s %s %s %s\n' "${VRDE_VR_AUTO_EXIT:-off}" "${VRDE_VR_FORCE_RENDER:-off}" "${VRDE_VR_DIAG_YAW:-off}" "${VRDE_VR_DUMP_FRAME:-off}" > "$GAME_LOG.env"
+EOFVR
+chmod +x "$tmp/package/vrde-vr" "$tmp/package/launch-vr.sh"
+"$tmp/package/launch-vr.sh" "$rom"
+[[ "$(sed -n '2p' "$GAME_LOG")" == --vr ]] || fail "VR launcher omitted VR mode"
+[[ "$(cat "$GAME_LOG.env")" == 'off off off off' ]] || fail "normal VR launch armed diagnostics"
+printf '45 90 1801\n' > "$XDG_DATA_HOME/VirtuaRacingVR/vr-diagnostic.once"
+"$tmp/package/launch-vr.sh" "$rom"
+[[ ! -e "$XDG_DATA_HOME/VirtuaRacingVR/vr-diagnostic.once" ]] || fail "diagnostic was not consumed"
+[[ "$(cat "$GAME_LOG.env")" == '45 1 90 1801' ]] || fail "diagnostic values not routed"
+"$tmp/package/launch-vr.sh" "$rom"
+[[ "$(cat "$GAME_LOG.env")" == 'off off off off' ]] || fail "diagnostic leaked to next launch"
+printf '99999 90 1801\n' > "$XDG_DATA_HOME/VirtuaRacingVR/vr-diagnostic.once"
+if "$tmp/package/launch-vr.sh" "$rom" >"$tmp/bad-diag.out" 2>&1; then
+    fail "unbounded diagnostic accepted"
+fi
 printf 'Frame launcher checks passed.\n'

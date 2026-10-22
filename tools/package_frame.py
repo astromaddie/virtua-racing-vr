@@ -15,12 +15,17 @@ import tarfile
 import tempfile
 from pathlib import Path
 
+from build_manifest import verify as verify_build_inputs
+
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build"
 SDK_SOURCE = BUILD / "openxr-sdk-1.1.63" / "source"
 PACKAGE_PARENT = BUILD / "package"
 ROM_SUFFIXES = {".32x", ".gp0", ".mds", ".srm"}
 OWNED_UNTRACKED_SOURCE = {
+    "src/vr_xr.c", "src/vr_xr.h", "src/vr_math.c", "src/vr_math.h",
+    "src/vr_render.inc", "src/sfvr/sfvr_view.c", "src/sfvr/sfvr_view.h",
+    "tools/build_manifest.py", "tests/test_vr_contracts.py", "tests/vr_math_test.c", "packaging/launch_vr.sh", "licenses/sfvr-MIT.txt",
     "Dockerfile",
     "docs/STEAM_FRAME.md",
     "docs/VR_ARCHITECTURE.md",
@@ -35,6 +40,9 @@ OWNED_UNTRACKED_SOURCE = {
     "tools/rom_preflight.py",
 }
 PACKAGE_PATHS = {
+    "vrde-vr",
+    "launch-vr.sh",
+    "licenses/sfvr-MIT.txt",
     "vrde",
     "openxr-colour-probe",
     "launch-flat.sh",
@@ -152,7 +160,7 @@ def main() -> int:
     if platform.system() != "Linux" or platform.machine() not in {"aarch64", "arm64"}:
         raise RuntimeError(f"package target requires Linux/aarch64; got {platform.system()}/{platform.machine()}")
 
-    binaries = {"vrde": BUILD / "vrde", "openxr-colour-probe": BUILD / "openxr-colour-probe"}
+    binaries = {"vrde-vr": BUILD / "vrde-vr", "vrde": BUILD / "vrde", "openxr-colour-probe": BUILD / "openxr-colour-probe"}
     for name, binary in binaries.items():
         if not binary.is_file() or not os.access(binary, os.X_OK):
             raise RuntimeError(f"required executable missing: {binary}")
@@ -163,6 +171,7 @@ def main() -> int:
     if not openxr_license.is_file():
         raise RuntimeError(f"pinned OpenXR SDK license missing: {openxr_license}")
 
+    build_inputs = verify_build_inputs()
     revision, dirty, dirty_paths = status_snapshot()
     source_paths = source_file_list()
     source_fingerprint = hashlib.sha256()
@@ -178,6 +187,8 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="frame-package-", dir=PACKAGE_PARENT) as temp_name:
         stage = Path(temp_name)
         shutil.copy2(binaries["vrde"], stage / "vrde")
+        shutil.copy2(binaries["vrde-vr"], stage / "vrde-vr")
+        shutil.copy2(ROOT / "packaging/launch_vr.sh", stage / "launch-vr.sh")
         shutil.copy2(binaries["openxr-colour-probe"], stage / "openxr-colour-probe")
         shutil.copy2(ROOT / "packaging/launch_flat.sh", stage / "launch-flat.sh")
         shutil.copy2(ROOT / "packaging/launch_openxr_probe.sh", stage / "launch-openxr-probe.sh")
@@ -187,14 +198,16 @@ def main() -> int:
         shutil.copy2(ROOT / "third_party/picodrive/COPYING", stage / "licenses/PicoDrive-COPYING")
         shutil.copy2(ROOT / "third_party/picodrive/pico/sound/emu2413/LICENSE", stage / "licenses/emu2413-LICENSE")
         shutil.copy2(ROOT / "licenses/G-Diffuser-MIT.txt", stage / "licenses/G-Diffuser-MIT.txt")
+        shutil.copy2(ROOT / "licenses/sfvr-MIT.txt", stage / "licenses/sfvr-MIT.txt")
         shutil.copy2(openxr_license, stage / "licenses/OpenXR-SDK-LICENSE.txt")
         make_source_archive(stage / "source.tar.gz", source_paths)
-        readme = """Virtua Racing Deluxe Enhanced — Steam Frame Linux ARM64 foundation
+        readme = """Virtua Racing Deluxe Enhanced — Steam Frame Linux ARM64
 
+VR game entry point: ./launch-vr.sh [RAW_US_ROM_PATH]
 Flat game entry point: ./launch-flat.sh [RAW_US_ROM_PATH]
 Standalone OpenXR colour probe: ./launch-openxr-probe.sh [SECONDS]
 
-The flat game requires your own raw US Virtua Racing Deluxe 32X image. The
+The game requires your own raw US Virtua Racing Deluxe 32X image. The
 launcher checks its exact size, MD5, and SHA-1 before starting the game. With
 no argument, it looks for 'Virtua Racing Deluxe (USA).32x' in the persistent
 VirtuaRacingVR data directory. Settings and saves are written there:
@@ -210,7 +223,9 @@ SDL2, OpenGL/GLX, X11, zlib, and the system C/C++ runtime. Python 3 is used by
 the ROM preflight launcher. See BUILD-METADATA.json for the exact builder-side
 dependency closure and source revision. source.tar.gz contains the matching
 ROM-free source snapshot and dependency notices, including the adapted G-Diffuser
-probe and its MIT license.
+probe and its MIT license. Shared sfvr View logic is MIT, from astromaddie/sfvr
+9932388f788ccbd71154ad3a766ac690b5bea669. See source docs/VR_ARCHITECTURE.md
+for controls, world scale, diagnostics and renderer constraints.
 """
         (stage / "README.txt").write_text(readme, encoding="utf-8")
 
@@ -223,6 +238,7 @@ probe and its MIT license.
             "source_dirty_paths": dirty_paths,
             "source_fingerprint_sha256": source_fingerprint.hexdigest(),
             "source_archive": "source.tar.gz",
+            "build_inputs": build_inputs,
             "source_files": len(source_paths),
             "rom_included": False,
             "package_allowlist": sorted(PACKAGE_PATHS),

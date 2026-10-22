@@ -52,7 +52,7 @@ if [[ ! -f "$sdk_install/lib/libopenxr_loader.a" ]]; then
     cmake --install "$sdk_build"
 fi
 
-make -j2 build/vrde
+make -j2 build/vrde build/vrde-vr
 
 cc -O2 -Wall -Wextra \
     -I"$sdk_install/include" \
@@ -61,6 +61,8 @@ cc -O2 -Wall -Wextra \
     "$sdk_install/lib/libopenxr_loader.a" \
     $(pkg-config --libs sdl2 x11 gl) -ldl -pthread -lm -lstdc++ -static-libstdc++ -static-libgcc \
     -o build/openxr-colour-probe
+
+python3 tools/build_manifest.py
 
 printf 'Built flat game: %s/build/vrde\n' "$root"
 printf 'Built standalone probe: %s/build/openxr-colour-probe\n' "$root"

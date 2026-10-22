@@ -63,6 +63,10 @@ static int32_t divide(int64_t dividend, int32_t divisor)
 /* Our working copy of the scene. The SH2s change their copy as they go (they clear the
    flags of objects they cull, and sort the track list), and so does this file. */
 static uint8_t scene[HLE_SCENE_SIZE];
+#ifdef VRDE_VR
+static int vr_collect, vr_car;
+static hle_vr_mesh_t vr_mesh;
+#endif
 
 static uint16_t scene_word(int offset)
 {
@@ -391,6 +395,9 @@ static void translate_to_local_position(matrix_t *matrix, int record)
    side are not drawn. Only the integer part of x is compared. */
 static int outside_view(const matrix_t *matrix)
 {
+#ifdef VRDE_VR
+    if (vr_collect) return 0; /* Head direction is independent of the game camera. */
+#endif
 	int32_t z = matrix->m[2][3];
 	if (z <= 0 || z >= (200 << 16))
 		return 1;
@@ -845,11 +852,17 @@ static void transform_vertices(geometry_t *g, uint32_t *model, int count)
 		fprintf(stderr, "hle: model with %d vertices\n", count);
 		count = MAX_VERTICES;
 	}
+	#ifdef VRDE_VR
+    double min_z=1e10,max_z=-1e10;
+#endif
 	for (int i = 0; i < count; i++) {
 		int32_t v[3];
 		for (int j = 0; j < 3; j++)
 			v[j] = (int32_t)sh2_signed_word(*model + 2 * j) << g->vertex_shift;
 		*model += 6;
+#ifdef VRDE_VR
+        if(vr_collect&&vr_car){double z=v[2]*16/FIXED_ONE;min_z=fmin(min_z,z);max_z=fmax(max_z,z);vr_mesh.car_length=max_z-min_z;}
+#endif
 
 		vertex_t *out = &g->vertices[i];
 		out->z = dot3(g->matrix.m[2], v) + g->matrix.m[2][3];
@@ -1174,6 +1187,22 @@ static void load_polygon(geometry_t *g, uint16_t header, uint32_t *model, int wi
 	}
 }
 
+#ifdef VRDE_VR
+static void vr_polygon(geometry_t *g, uint16_t header, int corners)
+{
+    uint16_t colour = (header & 0x20) ? lit_colour(g, g->colour) : g->colour;
+    for (int i = 1; i < corners - 1; i++) {
+        if (vr_mesh.count + 3 > HLE_VR_MAX_VERTICES) { vr_mesh.overflow = 1; return; }
+        int indices[3] = {0, i, i + 1};
+        for (int j = 0; j < 3; j++) {
+            const vertex_t *v = slot(g, indices[j]);
+            vr_mesh.vertices[vr_mesh.count++] = (hle_vr_vertex_t){
+                v->fx * 16, v->fy * 16, v->fz * 16, colour};
+        }
+    }
+}
+#endif
+
 /* Overlay A, C0000000: draws one model with the current matrix */
 static void draw_model(geometry_t *g, uint32_t model)
 {
@@ -1191,6 +1220,9 @@ static void draw_model(geometry_t *g, uint32_t model)
 		load_polygon(g, header, &model, 1);
 
 		int corners = (header & 1) ? 3 : 4;
+#ifdef VRDE_VR
+        if (vr_collect) { vr_polygon(g, header, corners); continue; }
+#endif
 		int behind;
 		if (outcode(g, corners, &behind))
 			continue;
@@ -1210,7 +1242,13 @@ static void draw_records(geometry_t *g, int first, int count)
 			continue;
 		g->matrix = object_matrix[record_index(record)];
 		g->extra = record_extra[record_index(record)];
-		draw_model(g, scene_long(record + MODEL));
+		#ifdef VRDE_VR
+        vr_car=record==PLAYER_CAR;
+#endif
+        draw_model(g, scene_long(record + MODEL));
+#ifdef VRDE_VR
+        vr_car=0;
+#endif
 		g->extra = 0;
 	}
 }
@@ -1499,6 +1537,9 @@ static int in_far_window(int record)
    cell's edge. */
 static int cell_in_sight(const matrix_t *view, int cell, double ground)
 {
+#ifdef VRDE_VR
+    if (vr_collect) return 1; /* walk_tiles already bounds the candidate set. */
+#endif
 	int row = cell / GRID_SIZE, column = cell % GRID_SIZE;
 	double margin = CELL_SIZE, far = far_view_limit / FIXED_ONE;
 	int behind = 0, beyond = 0, left = 0, right = 0;
@@ -2102,6 +2143,36 @@ const hle_frame_t *hle_interpolated(double fraction, const hle_frame_t *on_scree
 	}
 	return &smooth_frame;
 }
+
+#ifdef VRDE_VR
+const hle_vr_mesh_t *hle_vr_prepare(double fraction)
+{
+    if (!snapshot_count) return NULL;
+    const snapshot_t *a = &snapshots[0], *b = &snapshots[1];
+    int tick = b->frame - a->frame;
+    double t = 1;
+    if (snapshot_count == 2 && a->command == b->command && tick >= 1 && tick <= LONGEST_TICK)
+        t = fmax(0, fmin(1, (frame_count - 1 + fraction - b->frame) / tick));
+    static int cached_scene=-1; static double cached_t=-1;
+    if(cached_scene==scenes_taken&&cached_t==t)return &vr_mesh;
+    cached_scene=scenes_taken;cached_t=t;
+    /* Unlike the projected cache, this is regenerated only once at a frame boundary.
+       No core/emulator call is made between this and the two eye draws. */
+    interpolate(a, b, t);
+    vr_mesh.count = vr_mesh.overflow = 0;
+    vr_mesh.scene = scenes_taken;
+    vr_mesh.native_pitch = exact_word[(CAMERA + ANGLE_X)/2] * (2*M_PI/8192);
+    vr_mesh.native_roll = exact_word[(CAMERA + ANGLE_Z)/2] * (2*M_PI/8192);
+    int saved_far = far_view;
+    far_view = 1;
+    vr_collect = 1;
+    static hle_frame_t scratch;
+    int valid = build(b->command, &scratch);
+    vr_collect = 0;
+    far_view = saved_far;
+    return valid ? &vr_mesh : NULL;
+}
+#endif
 
 /* ---- Following the game: which polygon list is on screen ----
 

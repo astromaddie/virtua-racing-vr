@@ -1,37 +1,198 @@
-# VR architecture: current source state
+# VR architecture
 
-Target: native Linux ARM64 on Steam Frame, using SteamVR's OpenXR runtime. The
-first graphics gate is the ROM-free `openxr-colour-probe` executable; it creates
-an Xlib/GLX OpenGL 4.3 context, selects an `GL_SRGB8_ALPHA8` stereo swapchain,
-and clears the two eyes to distinct dim colours. Its `xrWaitFrame` loop uses the
-runtime's predicted display time, submits zero layers when `shouldRender` is
-false, and continues polling through standby. This probe does not call game code.
+Target: native Linux ARM64, OpenGL 4.3/GLX and OpenXR 1.0 through
+SteamLinuxRuntime_4-arm64. `make build/vrde-vr` enables `VRDE_VR`; the ordinary
+`make build/vrde` target retains the flat renderer. OpenXR-SDK 1.1.63 supplies
+the statically linked loader. The runtime API request is 1.0 because the Frame
+runtime rejects a 1.1 instance request; no 1.1 core call is required.
 
-The flat application remains the Enhanced build with its existing display,
-input, settings, and menu behaviour. The game uses a hybrid render/emulation
-path: PicoDrive runs the 68000, Z80, and SH2 emulation, while Enhanced's HLE
-reconstructs the 32X race scene from SH2 scene data and draws it with OpenGL.
-The SH2 raster path remains available for pixel comparisons. Source anchors are
-[`src/hle.c`](../src/hle.c), [`src/hle.h`](../src/hle.h), and
-[`src/sh2raster.c`](../src/sh2raster.c).
+The base is [PokaMilkTea/VirtuaRacingDeluxeEnhanced at
+9f059e10](https://github.com/PokaMilkTea/VirtuaRacingDeluxeEnhanced/tree/9f059e10e4c8bff928a581777f19e80c3d117b92).
+PicoDrive still executes the game logic and audio. The 68000 sends the original
+scene to SH2 memory, and Enhanced's HLE reconstructs its models. This is an
+emulation/native-renderer hybrid, not a recompilation of the entire game.
+The [sega-vr-disasm reference](https://github.com/matiaszanolli/sega-vr-disasm/tree/60819eff3cdf2abe0037081c9e6a484bf06bb9dc)
+is a separate reverse-engineering reference.
 
-Enhanced computes a view transform and transforms scene vertices before
-projection, but the renderer's polygon records contain screen-space vertex
-coordinates and depth. The game-facing render list therefore no longer carries
-the original 3D vertices and per-eye camera state that a stereo pass needs.
-The rasterizer also preserves the SH2 path's facing/culling rules, and HUD
-pixels are composed as screen-space layers. These are renderer integration
-constraints for a later phase; this foundation adds no game stereo pass.
+## Scene and camera
 
-| Gate | Current evidence |
+`hle_vr_prepare()` interpolates a single snapshot at the display-frame boundary.
+It collects exact camera-space model vertices in `draw_model()`, before screen
+projection, near clipping, backface rejection or SH2 screen/depth buckets.
+The immutable triangle mesh is uploaded once and used for both GPU eye draws.
+Game state, interpolation time, animation and audio never advance per eye.
+The original integer projection path remains available for flat pixel parity.
+
+The VR candidate set includes the existing bounded track-grid walk in every
+head direction, including rear cells. Object culling against the original
+screen is bypassed during collection. Opaque triangles use a real depth buffer,
+so turning away from the native camera does not retain its painter ordering.
+Dithered shadows/effects retain cutout coverage, with depth testing. The
+original data cannot supply dynamic objects which the game has omitted from
+its scene; the existing far-view prop reconstruction covers the known course
+props, not arbitrary missing meshes. The bounded grid can still end at the far
+view distance. No substitute geometry or cockpit assets are generated.
+
+The default is the original chase camera, with native camera pitch and roll
+removed before applying tracked head orientation. The shader converts the
+game's right/up/forward coordinates into OpenXR right/up/back coordinates.
+Both eyes use their own runtime pose and asymmetric FOV from the same predicted
+display time. Eye separation comes only from those poses in normal play.
+Physical lean is clamped to 0.35 m around the recentered head centre; this is a
+seated camera lean, not collision-body locomotion.
+
+The provisional scale is **16 original world units per metre**. The sampled
+Formula car body spans 67.265625 units longitudinally, giving a 4.20 m body as
+an explicit scale reference. This is a geometric calibration assumption, not
+a claim that the source model depicts a measured real vehicle. The single
+uniform scale applies to world geometry and physical eye/head translation.
+`VRDE_VR_WORLD_SCALE` accepts 4–64 units/m; larger values make the world smaller.
+`VRDE_VR_HORIZON_LOCK=0` preserves the original camera pitch and roll.
+
+## Draw inventory
+
+| Source element | VR treatment |
 |---|---|
-| Source/base | `PokaMilkTea/VirtuaRacingDeluxeEnhanced` at `9f059e10e4c8bff928a581777f19e80c3d117b92`; source and PicoDrive notices retained |
-| Linux ARM64 flat build | Native `vrde` built from the existing plain-C PicoDrive source list; target execution and race/HLE traces recorded by the build validation |
-| OpenXR colour probe | Standalone probe builds against pinned OpenXR-SDK 1.1.63 and statically links its loader; runtime eye output requires the Steam Frame/OpenXR graphics gate |
-| Stereo game renderer | Not implemented; requires a new per-eye scene representation before projection, then an explicit HUD/layer treatment and frame-state parity checks |
+| Track, cars, wheels, roadside models | Unprojected original triangles; per-eye GPU projection and depth |
+| Original screen/object/track culling | Wider bounded candidates; GPU frustum/near-plane clipping per eye |
+| Dithered shadows and effects | Original colour and cutout coverage with depth testing |
+| Plane B sky | Direction-only cylindrical sampling of the original repeating plane; no positional disparity; wrap period follows VDP plane width |
+| Copied 32X HUD | Original item mask supplies explicit alpha, retaining black artwork |
+| HLE needle and course map | Separate HUD raster and coverage masks, including palette-index-zero coverage |
+| Title, demo, menu, results and blinds transitions | Original full image on a yaw-anchored compositor panel; result HUD types 7/8/10 select flat presentation |
+| Race HUD | Separate alpha compositor quad, yaw-following with roll removed |
+| Projection background | Always present when submitting a visible frame, including flat screens |
 
-The disassembly reference is [`matiaszanolli/sega-vr-disasm` at
-`60819eff3cdf2abe0037081c9e6a484bf06bb9dc`](https://github.com/matiaszanolli/sega-vr-disasm/tree/60819eff3cdf2abe0037081c9e6a484bf06bb9dc).
-It builds the game ROM and serves as a reference, while this port's executable,
-HLE scene reconstruction, OpenGL renderer, emulator core, tests, and build system
-come from [`PokaMilkTea/VirtuaRacingDeluxeEnhanced`](https://github.com/PokaMilkTea/VirtuaRacingDeluxeEnhanced/tree/9f059e10e4c8bff928a581777f19e80c3d117b92).
+HUD/menu artwork is reused without new UI assets. The panel defaults to 2 m,
+1.9 m wide with the console's intended 4:3 display aspect. Its transparent
+pixels are zero RGB as well as zero alpha, matching OpenXR premultiplied-alpha
+composition. `VRDE_VR_HUD_DISTANCE` accepts 1–5 m. Sky sampling and polygon
+palette output are already gamma encoded: framebuffer sRGB conversion is
+disabled when copying these into the required sRGB swapchains.
+
+## Frame protocol and controls
+
+The target is **2160 × 2160 per eye at 120 Hz**. The application defaults to
+2160-square swapchains, bounded by the runtime maximum. `VRDE_VR_EYE_SIZE`
+accepts 1440–2160 for matched comparisons. Configure 120 Hz for this title in
+SteamVR before launch; the application records the actual predicted period
+and follows it. Neither refresh rate nor swapchain size changes during a
+session. This target requires measured full-game timing, not only a held scene.
+
+`xrWaitFrame` supplies time and pacing. A 59.92 Hz accumulator calls the existing
+`run_frame()` and audio path once per due simulation frame, capped at six steps
+following a long delay. `shouldRender=false`, invalid tracking and loss of focus
+freeze ordinary simulation/audio and discard catch-up time while polling keeps
+running. Valid unfocused views can still render the frozen scene. Both eyes
+share the prepared scene; swapchain acquire/wait/draw/release surrounds each
+eye, followed by the HUD/menu swapchain and `xrEndFrame`.
+
+Session STOPPING, EXITING, LOSS_PENDING and process termination signals use the
+same cleanup path. Signals only set a flag. Swapchain waits have bounded retry
+windows, and already-waited images are released on errors. Exit requests have a
+finite stop-event watchdog. Normal frames do not call `glReadPixels`, `glFinish`
+or wait for GPU queries.
+
+Bindings prefer `/interaction_profiles/valve/frame_controller_valve` when its
+extension is advertised, with Index and Touch fallbacks. Inputs feed the
+existing pad/analog adapter; there is no keyboard injection.
+
+| Frame control | Existing game input |
+|---|---|
+| Left stick / D-pad | Steering and menu navigation |
+| Right trigger / left trigger | Analog throttle / brake |
+| A / B / X | Genesis B / C / A, matching Enhanced's existing positional map |
+| Y / left bumper / right bumper | Genesis Z / X / Y camera views |
+| Right Menu | Start/pause |
+| Left View short release | Mode/back |
+| Left View hold 1 second | Recenter at the next stereo frame boundary |
+
+The View state machine is vendored unchanged from
+[`astromaddie/sfvr` at 9932388f](https://github.com/astromaddie/sfvr/tree/9932388f788ccbd71154ad3a766ac690b5bea669),
+under `licenses/sfvr-MIT.txt`. There are no mode changes on stick flicks.
+Custom VR settings UI and new cockpit interaction are outside this milestone;
+existing source settings and documented environment keys remain available.
+
+## Diagnostics and evidence
+
+Host `--vr-diagnostic` runs real game inputs at an explicitly synthetic display
+rate and renders both production eye callbacks every display tick into a
+256-square FBO, then records 768-square yaw 0/90/180 eye pairs and a HUD image.
+It is a geometry/state test, not a performance measurement. Host diagnostic
+IPD is explicitly synthetic 64 mm. The identity check independently rebuilds
+camera xyz from the existing flat exact projection and searches for those
+corners in the unprojected mesh; near-clipped intersections are excluded.
+
+On the Frame, `VRDE_VR_FORCE_RENDER=1` is accepted only alongside a finite
+`VRDE_VR_AUTO_EXIT`. It synthesizes the diagnostic head pose and uses valid
+runtime IPD when available, with a labelled synthetic 64 mm fallback. In
+standby it can render diagnostic textures but still submits zero compositor
+layers. `VRDE_VR_DIAG_YAW`, `VRDE_VR_DUMP_FRAME` and
+`VRDE_VR_FREEZE_FRAME` select pose, one-shot capture and a fixed emulated frame
+for matched timing. The dump readback is confined to that explicit diagnostic
+frame. Normal launch arms none of these settings. The launcher's
+`vr-diagnostic.once` route consumes the request before starting.
+
+Every ten seconds `[vr-perf]` reports windowed display/emulation rate, submitted
+and diagnostic-rendered frame counts, CPU wait/prepare/eye/acquire/release times,
+and available asynchronous per-eye GPU elapsed-query results. Pending queries
+are skipped, never waited on. Exclude startup/warm-up and the explicit capture
+window when comparing fixed-scene runs. Submitted frames and offscreen forced
+renders are separate counters; standby rendering is not compositor acceptance.
+
+Verified host results for the checked-in Big Forest input script:
+
+- The flat trace reproduces all seven fields of all 8,000 retained pre-stereo
+  frame hashes exactly (screen, audio, 68K RAM, VDP, SH2 SDRAM, framebuffers,
+  32X registers).
+- At 72, 90 and 120 synthetic display Hz, all 1,801 simulation frames match all
+  seven fields of a sample-rate-matched 48 kHz reference, including audio. Both
+  eye callbacks run per display tick: 2,164 / 2,705 / 3,607 ticks respectively.
+- Flat identity geometry: 1,629 corners at 72/90 Hz and 1,625 at 120 Hz, zero
+  missing corners; maximum component error 0.000122 world units. The different
+  final sub-tick fractions account for the small corner-count difference.
+- The sampled mesh contains 21,642 vertices with no capacity overflow. Captures
+  show front, side building/track and rear start-line scenery, plus the separate
+  original HUD. Runtime controller actuation and optical comfort require direct
+  interaction; these host captures establish geometry and production routing.
+
+The retained 44.1 kHz trace was unsuitable for comparing the game's 48 kHz audio.
+The matched reference uses `git show 25a0988:src/vrdetrace.c`, with only
+`core_init(rom_path, 44100)` changed to `48000`, compiled against the unchanged
+flat core/HLE objects. It runs `-n 8000` with `tools/race_inputs.txt`; the newly
+built ordinary 44.1 kHz trace independently matches the retained original.
+The SHA-256 identity of reference source and results is recorded in the compact
+host report under `build/vr-evidence/verification.json`.
+
+The initial production flat GPU path also reproduces its retained baseline:
+0/1,801 core-composite mismatches and 0/539 HLE-composite mismatches. Its known
+pre-existing Plane B seam at frame 1265 and raster comparison differences are
+separate from the stereo geometry check.
+
+The Steam Frame runtime check used SteamVR/OpenXR 2.18.2, API 1.0, two
+2160-square three-image sRGB eye swapchains, a 640 × 448 HUD swapchain and a
+title-specific 120 Hz preference. The final VR executable's SHA-256 is
+`c42b2c865e9cc391c062fb6c3cefa83b95f68db621f64737ec414caa649b685c`.
+A finite 75-second diagnostic advanced the real game continuously, without
+`VRDE_VR_FREEZE_FRAME`, and rendered 8,708 stereo frames. After startup and
+the explicit readback window, its final three ten-second windows measured:
+
+| Measurement | Range |
+|---|---|
+| Render-loop cadence | 119.95–120.02 Hz |
+| Original simulation cadence | 59.87–59.96 Hz |
+| CPU scene preparation | 3.70–3.85 ms |
+| OpenXR frame wait | 2.54–2.65 ms |
+| GPU eye draw, left / right | 0.757–0.785 / 0.793–0.808 ms |
+
+This measures forced texture rendering with the runtime in standby: only one
+frame received compositor submission permission. It does not establish
+sustained visible presentation, optical quality or interaction acceptance.
+An ordinary Steam launch with diagnostics absent also created the expected
+swapchains, entered VISIBLE, froze simulation during standby, and shut down
+through the normal window-close/session-stop path. All three controller
+profiles were accepted by the runtime; physical input remains a separate gate.
+
+Packaging includes a matching source archive and static-loader license. Build
+input hashes cover native source, headers, Makefile and the SDK loader;
+packaging rejects changed compilation inputs or binaries until rebuilt.

@@ -2930,6 +2930,10 @@ static int handle_events(SDL_Window *window)
 	return 1;
 }
 
+#ifdef VRDE_VR
+#include "vr_render.inc"
+#endif
+
 /* ---- main ---- */
 
 static void print_usage(const char *program)
@@ -2942,6 +2946,9 @@ static SDL_Window *open_window(int hidden)
 {
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+#ifdef VRDE_VR
+    if(vr_mode){SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION,4);SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,3);}
+#endif
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
 	int width = window_width_for(224 * 3);
@@ -2963,6 +2970,17 @@ static SDL_Window *open_window(int hidden)
 
 int main(int argc, char **argv)
 {
+	#ifdef VRDE_VR
+    /* Consume only these long flags; keep the flat getopt route unchanged. */
+    int diag_frames=0;
+    for(int i=1;i<argc;i++) {
+        if(!strcmp(argv[i],"--vr")||!strcmp(argv[i],"--vr-diagnostic")) {
+            vr_mode=1; if(!strcmp(argv[i],"--vr-diagnostic"))diag_frames=1801;
+            memmove(argv+i,argv+i+1,(argc-i)*sizeof(*argv));argc--;i--;
+        }
+    }
+    if(diag_frames)diag_frames=vr_env("VRDE_VR_DIAG_FRAMES",1801,1,100000);
+#endif
 	int dump_frame = -1;
 	int hle_check_from = -1;
 	int picture_scale = 1;
@@ -3016,6 +3034,11 @@ int main(int argc, char **argv)
 	}
 	const char *rom = argv[optind];
 	int checking = dump_frame >= 0;
+#ifdef VRDE_VR
+    if(vr_mode&&checking){fprintf(stderr,"--vr and -d are separate modes\n");return 1;}
+    vr_diagnostic=vr_mode&&vr_env("VRDE_VR_AUTO_EXIT",0,0,3600)>0&&vr_env("VRDE_VR_FORCE_RENDER",0,0,1);
+    if(diag_frames||vr_diagnostic)checking=1;
+#endif
 	if (checking) {
 		resolution = 1;      /* the checks compare at the console's resolution */
 		msaa = 0;
@@ -3079,7 +3102,18 @@ int main(int argc, char **argv)
 		}
 	}
 
-	if (checking) {
+	#ifdef VRDE_VR
+    if(vr_mode) {
+        vr_graphics_init();
+        if(diag_frames)return vr_host_diagnostic(diag_frames,script_frame,script_buttons,script_length);
+        vr_script_frames=script_frame;vr_script_buttons=script_buttons;vr_script_length=script_length;
+        vr_diagnostic=vr_env("VRDE_VR_AUTO_EXIT",0,0,3600)>0 && vr_env("VRDE_VR_FORCE_RENDER",0,0,1);
+        if(!vr_diagnostic)open_audio();
+        const vr_callbacks_t callbacks={vr_prepare,vr_eye,vr_panel,vr_simulation_frames};
+        int result=vr_xr_run(window,&callbacks);SDL_Quit();return result;
+    }
+#endif
+    if (checking) {
 		printf("checking frames 0 to %d\n", dump_frame);
 		return dump(dump_frame, hle_check_from, picture_scale, played_colours, script_frame, script_buttons, script_length);
 	}

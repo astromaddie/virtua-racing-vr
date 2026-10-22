@@ -2,6 +2,14 @@
 
 English | [繁體中文](README.zh-TW.md)
 
+Steam Frame branch: native Linux ARM64 OpenXR stereo using the Enhanced HLE
+renderer, with tracked head poses and Frame controls. Start with
+[build, package and launch instructions](docs/STEAM_FRAME.md); the packaged VR
+entry point is `launch-vr.sh`, while `launch-flat.sh` retains the flat game.
+The [VR architecture](docs/VR_ARCHITECTURE.md) describes the camera, original
+HUD/menu presentation and verification. The original Enhanced project and
+credits follow below.
+
 This project is built on the PicoDrive emulator and runs the original Sega 32X version of **Virtua Racing Deluxe** with enhanced graphics.
 
 > **Unofficial project.** Not affiliated with or endorsed by SEGA. Virtua Racing is a trademark of SEGA. No ROMs or ROM-derived data are included. Non-commercial use only.

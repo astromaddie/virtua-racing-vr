@@ -139,3 +139,14 @@ clean:
 -include $(CORE_OBJECTS:.o=.d) $(WIN_CORE_OBJECTS:.o=.d)
 
 .PHONY: analogtest all clean test win win-deps
+
+# Native Linux OpenXR game. Flat object files/core remain identical.
+OPENXR_PREFIX ?= $(CURDIR)/build/openxr-sdk-1.1.63/install
+VR_SOURCES = src/vr_xr.c src/vr_math.c src/sfvr/sfvr_view.c
+VR_HEADERS = src/vr_xr.h src/vr_math.h src/sfvr/sfvr_view.h src/vr_render.inc
+build/vrde-vr: $(VRDE_SOURCES) $(VRDE_HEADERS) $(HLE_SOURCES) $(OUR_COMMON) $(CORE_OBJECTS) $(VR_SOURCES) $(VR_HEADERS)
+	$(CC) $(OUR_CFLAGS) -DVRDE_VR -Isrc -I$(OPENXR_PREFIX)/include $$($(SDL2_CONFIG) --cflags) $(filter %.c %.o,$^) $$($(SDL2_CONFIG) --libs) $(GL_LIBS) -lX11 -lz -lm $(OPENXR_PREFIX)/lib/libopenxr_loader.a -ldl -pthread -lstdc++ -static-libstdc++ -static-libgcc -o $@
+
+vrtest: tests/vr_math_test.c src/vr_math.c src/vr_math.h
+	$(CC) $(CFLAGS) -Isrc -I$(OPENXR_PREFIX)/include tests/vr_math_test.c src/vr_math.c -lm -o build/vr_math_test
+	build/vr_math_test
