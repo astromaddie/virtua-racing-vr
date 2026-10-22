@@ -3109,7 +3109,7 @@ int main(int argc, char **argv)
         vr_script_frames=script_frame;vr_script_buttons=script_buttons;vr_script_length=script_length;
         vr_diagnostic=vr_env("VRDE_VR_AUTO_EXIT",0,0,3600)>0 && vr_env("VRDE_VR_FORCE_RENDER",0,0,1);
         if(!vr_diagnostic)open_audio();
-        const vr_callbacks_t callbacks={vr_prepare,vr_eye,vr_panel,vr_simulation_frames};
+        const vr_callbacks_t callbacks={vr_prepare,vr_eye,vr_eye_resolved,vr_panel,vr_simulation_frames};
         int result=vr_xr_run(window,&callbacks);SDL_Quit();return result;
     }
 #endif

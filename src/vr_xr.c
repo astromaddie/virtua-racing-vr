@@ -5,6 +5,7 @@
 #include "gl.h"
 #include "platform/common/input_pico.h"
 #include "sfvr/sfvr_view.h"
+#include "vr_msaa.h"
 #include "vr_math.h"
 #include <GL/glx.h>
 #include <SDL_syswm.h>
@@ -169,9 +170,33 @@ typedef struct {
     XrSwapchainImageOpenGLKHR *images;
     uint32_t count;
     int w, h, waited;
-    GLuint depth;
+    vr_msaa_target_t msaa;
 } chain_t;
-static int make_chain(XrInstance instance, XrSession session, chain_t *c, int w, int h, int depth)
+static vr_msaa_gl_api_t msaa_api_current(void)
+{
+    const vr_msaa_gl_api_t gl = {
+        glGetIntegerv,
+        glGenFramebuffers,
+        glDeleteFramebuffers,
+        glBindFramebuffer,
+        glCheckFramebufferStatus,
+        glGenRenderbuffers,
+        glDeleteRenderbuffers,
+        glBindRenderbuffer,
+        glRenderbufferStorageMultisample,
+        glGetRenderbufferParameteriv,
+        glFramebufferRenderbuffer,
+        glDrawBuffer,
+        glReadBuffer,
+        glIsEnabled,
+        glEnable,
+        glDisable,
+        glBlitFramebuffer,
+        (void (*)(GLenum, GLsizei, const GLenum *))SDL_GL_GetProcAddress("glInvalidateFramebuffer"),
+    };
+    return gl;
+}
+static int make_chain(XrInstance instance, XrSession session, chain_t *c, int w, int h)
 {
     c->w = w;
     c->h = h;
@@ -198,12 +223,7 @@ static int make_chain(XrInstance instance, XrSession session, chain_t *c, int w,
                                           (XrSwapchainImageBaseHeader *)c->images),
                "xrEnumerateSwapchainImages"))
         return 0;
-    if (depth) {
-        glGenRenderbuffers(1, &c->depth);
-        glBindRenderbuffer(GL_RENDERBUFFER, c->depth);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
-    }
-    printf("[vr] swapchain %dx%d images=%u srgb\n", w, h, c->count);
+    printf("[vr] swapchain %dx%d images=%u srgb samples=1\n", w, h, c->count);
     return 1;
 }
 static int acquire(XrInstance instance, chain_t *c, GLuint framebuffer)
@@ -226,7 +246,6 @@ static int acquire(XrInstance instance, chain_t *c, GLuint framebuffer)
         return 0;
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, c->images[index].image, 0);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, c->depth);
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
     return glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
 }
@@ -274,6 +293,7 @@ int vr_xr_run(SDL_Window *window, const vr_callbacks_t *cb)
     XrActionSet set = 0;
     XrAction actions[ACT_COUNT] = {0};
     chain_t chains[3] = {{0}};
+    vr_msaa_gl_api_t msaa_gl = {0};
     GLuint framebuffer = 0;
     int running = 0, result = 1, quit = 0, exiting = 0, frame_started = 0;
     XrSessionState state = XR_SESSION_STATE_UNKNOWN;
@@ -288,6 +308,7 @@ int vr_xr_run(SDL_Window *window, const vr_callbacks_t *cb)
     SDL_GL_SetSwapInterval(0);
     if (!gl_load_functions())
         goto cleanup;
+    msaa_gl = msaa_api_current();
     uint32_t count = 0;
     TRY(xrEnumerateInstanceExtensionProperties(NULL, 0, &count, NULL));
     if (!count || count > 4096)
@@ -408,10 +429,11 @@ int vr_xr_run(SDL_Window *window, const vr_callbacks_t *cb)
         int size = vr_env("VRDE_VR_EYE_SIZE", 2160, 1440, 2160);
         int w = fmin(size, config_views[i].maxImageRectWidth),
             h = fmin(size, config_views[i].maxImageRectHeight);
-        if (!make_chain(instance, session, &chains[i], w, h, 1))
+        if (!make_chain(instance, session, &chains[i], w, h) ||
+            !vr_msaa_target_create(&msaa_gl, &chains[i].msaa, w, h))
             goto cleanup;
     }
-    if (!make_chain(instance, session, &chains[2], 640, 448, 0))
+    if (!make_chain(instance, session, &chains[2], 640, 448))
         goto cleanup;
     glGenFramebuffers(1, &framebuffer);
     unsigned long frames = 0, rendered = 0, standby = 0;
@@ -585,12 +607,30 @@ int vr_xr_run(SDL_Window *window, const vr_callbacks_t *cb)
                 if (measure)
                     timers.begin(GL_TIME_ELAPSED, timers.query[slot][eye]);
                 stage = seconds();
+                GLboolean multisample_was_enabled = glIsEnabled(GL_MULTISAMPLE);
+                GLboolean srgb_was_enabled = glIsEnabled(GL_FRAMEBUFFER_SRGB);
+                glEnable(GL_MULTISAMPLE);
+                glBindFramebuffer(GL_FRAMEBUFFER, chains[eye].msaa.framebuffer);
                 cb->eye(eye, relative, views[eye].fov, chains[eye].w, chains[eye].h);
-                perf.eyes += seconds() - stage;
+                int resolved = vr_msaa_target_resolve(&msaa_gl, &chains[eye].msaa, framebuffer,
+                                                       chains[eye].w, chains[eye].h);
                 if (measure) {
                     timers.end(GL_TIME_ELAPSED);
                     timers.pending[slot][eye] = 1;
                 }
+                if (multisample_was_enabled)
+                    glEnable(GL_MULTISAMPLE);
+                else
+                    glDisable(GL_MULTISAMPLE);
+                if (srgb_was_enabled)
+                    glEnable(GL_FRAMEBUFFER_SRGB);
+                else
+                    glDisable(GL_FRAMEBUFFER_SRGB);
+                if (!resolved)
+                    goto cleanup;
+                if (cb->resolved_eye)
+                    cb->resolved_eye(eye, relative, chains[eye].w, chains[eye].h);
+                perf.eyes += seconds() - stage;
                 stage = seconds();
                 if (!release(instance, &chains[eye]))
                     goto cleanup;
@@ -678,10 +718,13 @@ cleanup:
         }
     }
     for (int i = 0; i < 3; i++) {
+        vr_msaa_target_destroy(&msaa_gl, &chains[i].msaa);
         if (chains[i].handle)
             xrDestroySwapchain(chains[i].handle);
         free(chains[i].images);
     }
+    if (framebuffer)
+        glDeleteFramebuffers(1, &framebuffer);
     if (space)
         xrDestroySpace(space);
     if (session)

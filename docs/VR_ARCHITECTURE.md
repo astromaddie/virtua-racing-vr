@@ -70,6 +70,20 @@ composition. `VRDE_VR_HUD_DISTANCE` accepts 1–5 m. Sky sampling and polygon
 palette output are already gamma encoded: framebuffer sRGB conversion is
 disabled when copying these into the required sRGB swapchains.
 
+Native VR eyes use fixed **4× MSAA**, with same-size sRGB8-alpha8 colour and
+24-bit depth renderbuffers. The OpenXR images remain single-sample. Each eye
+resolves colour into its acquired image before diagnostic readback and release;
+the GPU eye timer includes that resolve. Both attachments must actually have
+four samples and form a complete framebuffer, or initialization stops with a
+diagnostic. There is no VR AA selector or automatic sample-count reduction.
+The existing game MSAA setting continues to control only the flat HLE renderer.
+
+Geometry keeps framebuffer sRGB conversion disabled for the encoded palette.
+The matching-format resolve enables sRGB conversion only for the blit and then
+restores the prior state. Where available, the resolve invalidates its temporary
+colour and depth attachments immediately afterward to avoid unnecessary sample
+storage on tiled GPUs. HUD/menu panels retain their separate single-sample path.
+
 ## Frame protocol and controls
 
 The target is **2160 × 2160 per eye at 120 Hz**. The application defaults to
@@ -188,6 +202,8 @@ the explicit readback window, its final three ten-second windows measured:
 This measures forced texture rendering with the runtime in standby: only one
 frame received compositor submission permission. It does not establish
 sustained visible presentation, optical quality or interaction acceptance.
+These timings describe the original single-sample eye renderer; they are not
+measurements of the fixed 4× MSAA path.
 An ordinary Steam launch with diagnostics absent also created the expected
 swapchains, entered VISIBLE, froze simulation during standby, and shut down
 through the normal window-close/session-stop path. All three controller

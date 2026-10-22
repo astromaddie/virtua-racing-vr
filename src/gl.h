@@ -32,6 +32,7 @@ static int gl_load_functions(void) { return 1; }
   X(PFNGLCREATEPROGRAMPROC, glCreateProgram) \
   X(PFNGLCREATESHADERPROC, glCreateShader) \
   X(PFNGLDELETEFRAMEBUFFERSPROC, glDeleteFramebuffers) \
+  X(PFNGLDELETERENDERBUFFERSPROC, glDeleteRenderbuffers) \
   X(PFNGLDRAWBUFFERSPROC, glDrawBuffers) \
   X(PFNGLENABLEVERTEXATTRIBARRAYPROC, glEnableVertexAttribArray) \
   X(PFNGLFRAMEBUFFERRENDERBUFFERPROC, glFramebufferRenderbuffer) \
@@ -42,6 +43,7 @@ static int gl_load_functions(void) { return 1; }
   X(PFNGLGENVERTEXARRAYSPROC, glGenVertexArrays) \
   X(PFNGLGETSHADERINFOLOGPROC, glGetShaderInfoLog) \
   X(PFNGLGETSHADERIVPROC, glGetShaderiv) \
+  X(PFNGLGETRENDERBUFFERPARAMETERIVPROC, glGetRenderbufferParameteriv) \
   X(PFNGLGETUNIFORMLOCATIONPROC, glGetUniformLocation) \
   X(PFNGLLINKPROGRAMPROC, glLinkProgram) \
   X(PFNGLRENDERBUFFERSTORAGEPROC, glRenderbufferStorage) \
@@ -86,6 +88,7 @@ static int gl_load_functions(void)
 #define glCreateProgram vrde_glCreateProgram
 #define glCreateShader vrde_glCreateShader
 #define glDeleteFramebuffers vrde_glDeleteFramebuffers
+#define glDeleteRenderbuffers vrde_glDeleteRenderbuffers
 #define glDrawBuffers vrde_glDrawBuffers
 #define glEnableVertexAttribArray vrde_glEnableVertexAttribArray
 #define glFramebufferRenderbuffer vrde_glFramebufferRenderbuffer
@@ -96,6 +99,7 @@ static int gl_load_functions(void)
 #define glGenVertexArrays vrde_glGenVertexArrays
 #define glGetShaderInfoLog vrde_glGetShaderInfoLog
 #define glGetShaderiv vrde_glGetShaderiv
+#define glGetRenderbufferParameteriv vrde_glGetRenderbufferParameteriv
 #define glGetUniformLocation vrde_glGetUniformLocation
 #define glLinkProgram vrde_glLinkProgram
 #define glRenderbufferStorage vrde_glRenderbufferStorage

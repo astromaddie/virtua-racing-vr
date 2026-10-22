@@ -280,6 +280,9 @@ static void vr_eye(int eye, XrPosef pose, XrFovf fov, int w, int h)
         glDrawArrays(GL_TRIANGLES, 0, vr_scene->count);
         glDisable(GL_DEPTH_TEST);
     }
+}
+static void vr_eye_resolved(int eye, XrPosef pose, int w, int h)
+{
     int target = (int)vr_env("VRDE_VR_DUMP_FRAME", 0, 0, 1000000);
     if (target > 0 && vr_sim_frames >= target && !(vr_dumped & (1 << eye))) {
         char name[64];
@@ -332,6 +335,7 @@ static int vr_host_diagnostic(int frames, int *script_frames, uint16_t *script_b
             XrPosef pose = {{0, 0, 0, 1}, {eye ? .032f : -.032f, 0, 0}};
             glBindFramebuffer(GL_FRAMEBUFFER, cadence_fbo);
             vr_eye(eye, pose, cadence_fov, 256, 256);
+            vr_eye_resolved(eye, pose, 256, 256);
         }
         vr_panel(256, 256, vr_immersive);
     }
@@ -374,6 +378,7 @@ static int vr_host_diagnostic(int frames, int *script_frames, uint16_t *script_b
             XrPosef pose = {q, vr_rotate(q, (XrVector3f){eye ? .032f : -.032f, 0, 0})};
             glBindFramebuffer(GL_FRAMEBUFFER, fbo);
             vr_eye(eye, pose, fov, 768, 768);
+            vr_eye_resolved(eye, pose, 768, 768);
             char name[64];
             snprintf(name, sizeof(name), "vr-yaw%d-eye%d.bmp", yaw, eye);
             vr_dump_image(name, 768, 768);

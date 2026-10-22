@@ -11,6 +11,7 @@ typedef struct {
     /* Return 1 for immersive racing, 0 for the original flat screen. */
     int (*prepare)(double time, double period, int active, const vr_input_t *input);
     void (*eye)(int eye, XrPosef pose, XrFovf fov, int width, int height);
+    void (*resolved_eye)(int eye, XrPosef pose, int width, int height);
     void (*panel)(int width, int height, int immersive);
     long (*simulation_frames)(void);
 } vr_callbacks_t;
