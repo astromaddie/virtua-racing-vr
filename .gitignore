@@ -7,6 +7,8 @@
 /build/
 /out/
 /deps/
+__pycache__/
+*.py[cod]
 
 # Files the front ends write: save states hold SH2 SDRAM copied from the ROM, so they are ROM-derived data
 *.gp0

@@ -39,6 +39,7 @@ CFLAGS = -O2 -g -Wall
 # so changing a header rebuilds everything that uses it.
 CORE_CFLAGS = $(CFLAGS) -I$(PICO) $(DEFINES) -Wno-unused -fno-strict-aliasing -MMD -MP
 OUR_CFLAGS = $(CFLAGS) -I$(PICO) $(DEFINES)
+SDL2_CONFIG ?= sdl2-config
 
 # Our programs: core.c plus the program's own file.
 OUR_COMMON = src/core.c src/core.h src/m68kpatch.c src/m68kpatch.h src/analog.c src/analog.h $(PICO)/pico/pico.h
@@ -68,7 +69,7 @@ HLE_SOURCES = src/hle.c src/hle.h src/sh2raster.c src/sh2raster.h src/hlecheck.c
 VRDE_SOURCES = src/vrde.c src/layers.c src/settings.c
 VRDE_HEADERS = src/layers.h src/settings.h src/gl.h src/version.h
 build/vrde: $(VRDE_SOURCES) $(VRDE_HEADERS) $(HLE_SOURCES) $(OUR_COMMON) $(CORE_OBJECTS)
-	$(CC) $(OUR_CFLAGS) $$(sdl2-config --cflags) $(filter %.c %.o,$^) $$(sdl2-config --libs) $(GL_LIBS) -lz -lm -o $@
+	$(CC) $(OUR_CFLAGS) $$($(SDL2_CONFIG) --cflags) $(filter %.c %.o,$^) $$($(SDL2_CONFIG) --libs) $(GL_LIBS) -lz -lm -o $@
 
 # Headless trace tool: per-frame hashes and screenshots.
 build/vrdetrace: src/vrdetrace.c $(HLE_SOURCES) $(OUR_COMMON) $(CORE_OBJECTS)
