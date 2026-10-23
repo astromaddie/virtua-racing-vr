@@ -197,7 +197,7 @@ static void setup(void)
     fake.draw_framebuffer = 32;
     fake.renderbuffer = 33;
     fake.max_samples = 8;
-    fake.colour_samples = fake.depth_samples = 2;
+    fake.colour_samples = fake.depth_samples = 4;
     fake.framebuffer_status = GL_FRAMEBUFFER_COMPLETE;
     fake.next_framebuffer = 100;
     fake.next_renderbuffer = 200;
@@ -210,7 +210,7 @@ static void test_fixed_target_and_resolve(void)
     assert(vr_msaa_target_create(&api, &target, 2160, 2160));
     assert(target.width == 2160 && target.height == 2160);
     assert(target.framebuffer == 101 && target.colour == 201 && target.depth == 202);
-    assert(fake.colour_storage_samples == 2 && fake.depth_storage_samples == 2);
+    assert(fake.colour_storage_samples == 4 && fake.depth_storage_samples == 4);
     assert(fake.colour_format == GL_SRGB8_ALPHA8 && fake.depth_format == GL_DEPTH_COMPONENT24);
     assert(fake.colour_width == 2160 && fake.colour_height == 2160);
     assert(fake.depth_width == 2160 && fake.depth_height == 2160);
@@ -257,12 +257,12 @@ static void test_unsupported_or_incomplete_target_aborts(void)
 {
     setup();
     vr_msaa_target_t target;
-    fake.max_samples = 1;
+    fake.max_samples = 2;
     assert(!vr_msaa_target_create(&api, &target, 2160, 2160));
     assert(fake.framebuffer_allocations == 0 && fake.renderbuffer_allocations == 0);
 
     setup();
-    fake.colour_samples = 4;
+    fake.colour_samples = 2;
     assert(!vr_msaa_target_create(&api, &target, 2160, 2160));
     assert(!target.framebuffer && !target.colour && !target.depth);
     assert(fake.deleted_framebuffers == 1 && fake.deleted_renderbuffers == 2);
@@ -278,6 +278,6 @@ int main(void)
 {
     test_fixed_target_and_resolve();
     test_unsupported_or_incomplete_target_aborts();
-    puts("VR fixed 2x MSAA target tests passed");
+    puts("VR fixed 4x MSAA target tests passed");
     return 0;
 }

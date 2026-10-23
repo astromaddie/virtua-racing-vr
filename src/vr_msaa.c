@@ -5,13 +5,13 @@
 static int api_ready(const vr_msaa_gl_api_t *gl)
 {
     if (!gl) {
-        fprintf(stderr, "[vr] fixed 2x MSAA GL API is missing\n");
+        fprintf(stderr, "[vr] fixed 4x MSAA GL API is missing\n");
         return 0;
     }
 #define REQUIRE_GL(field)                                                                                   \
     do {                                                                                                     \
         if (!gl->field) {                                                                                    \
-            fprintf(stderr, "[vr] fixed 2x MSAA GL API has no %s\n", #field);                               \
+            fprintf(stderr, "[vr] fixed 4x MSAA GL API has no %s\n", #field);                               \
             return 0;                                                                                        \
         }                                                                                                    \
     } while (0)
@@ -58,7 +58,7 @@ int vr_msaa_target_create(const vr_msaa_gl_api_t *gl, vr_msaa_target_t *target, 
     if (!api_ready(gl))
         return 0;
     if (width <= 0 || height <= 0) {
-        fprintf(stderr, "[vr] fixed 2x MSAA eye target unavailable: invalid dimensions; aborting\n");
+        fprintf(stderr, "[vr] fixed 4x MSAA eye target unavailable: invalid dimensions; aborting\n");
         return 0;
     }
 
@@ -68,7 +68,7 @@ int vr_msaa_target_create(const vr_msaa_gl_api_t *gl, vr_msaa_target_t *target, 
     gl->get_integer(GL_RENDERBUFFER_BINDING, &previous_renderbuffer);
     gl->get_integer(GL_MAX_SAMPLES, &max_samples);
     if (max_samples < VR_EYE_MSAA_SAMPLES) {
-        fprintf(stderr, "[vr] fixed 2x MSAA eye target unavailable: GL_MAX_SAMPLES=%d; aborting\n",
+        fprintf(stderr, "[vr] fixed 4x MSAA eye target unavailable: GL_MAX_SAMPLES=%d; aborting\n",
                 max_samples);
         return 0;
     }
@@ -77,7 +77,7 @@ int vr_msaa_target_create(const vr_msaa_gl_api_t *gl, vr_msaa_target_t *target, 
     gl->gen_renderbuffers(1, &target->colour);
     gl->gen_renderbuffers(1, &target->depth);
     if (!target->framebuffer || !target->colour || !target->depth) {
-        fprintf(stderr, "[vr] fixed 2x MSAA eye target unavailable: GL object allocation failed; aborting\n");
+        fprintf(stderr, "[vr] fixed 4x MSAA eye target unavailable: GL object allocation failed; aborting\n");
         goto fail;
     }
 
@@ -103,7 +103,7 @@ int vr_msaa_target_create(const vr_msaa_gl_api_t *gl, vr_msaa_target_t *target, 
     if (colour_samples != VR_EYE_MSAA_SAMPLES || depth_samples != VR_EYE_MSAA_SAMPLES ||
         status != GL_FRAMEBUFFER_COMPLETE) {
         fprintf(stderr,
-                "[vr] fixed 2x MSAA eye target unavailable: color_samples=%d depth_samples=%d "
+                "[vr] fixed 4x MSAA eye target unavailable: color_samples=%d depth_samples=%d "
                 "framebuffer_status=0x%04x; aborting\n",
                 colour_samples, depth_samples, status);
         goto fail;
@@ -114,7 +114,7 @@ int vr_msaa_target_create(const vr_msaa_gl_api_t *gl, vr_msaa_target_t *target, 
     gl->bind_framebuffer(GL_READ_FRAMEBUFFER, (GLuint)previous_read);
     gl->bind_framebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)previous_draw);
     gl->bind_renderbuffer(GL_RENDERBUFFER, (GLuint)previous_renderbuffer);
-    printf("[vr] fixed 2x MSAA eye target %dx%d color=sRGB8-alpha8 depth=24 samples=%d\n", width,
+    printf("[vr] fixed 4x MSAA eye target %dx%d color=sRGB8-alpha8 depth=24 samples=%d\n", width,
            height, VR_EYE_MSAA_SAMPLES);
     return 1;
 
@@ -131,7 +131,7 @@ int vr_msaa_target_resolve(const vr_msaa_gl_api_t *gl, const vr_msaa_target_t *t
 {
     if (!api_ready(gl) || !target || !target->framebuffer || !destination_framebuffer ||
         width != target->width || height != target->height) {
-        fprintf(stderr, "[vr] fixed 2x MSAA eye resolve unavailable: invalid target or extent; aborting\n");
+        fprintf(stderr, "[vr] fixed 4x MSAA eye resolve unavailable: invalid target or extent; aborting\n");
         return 0;
     }
 
