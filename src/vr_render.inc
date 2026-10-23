@@ -2,7 +2,7 @@
    the exact existing simulation, audio, palette and input routes remain shared. */
 #include "vr_math.h"
 #include "vr_xr.h"
-static int vr_mode, vr_diagnostic;
+static int vr_mode, vr_diagnostic, vr_replay;
 static const hle_vr_mesh_t *vr_scene;
 static GLuint vr_program, vr_sky_program, vr_vao, vr_buffer, vr_panel_texture, vr_panel_program;
 static int vr_immersive;
@@ -191,30 +191,45 @@ static int vr_prepare(double time, double period, int active, const vr_input_t *
     }
     vr_accumulator += fmax(0, fmin(delta, .1));
     int count = 0;
+    vr_prepare_timing_t *timing = input->timing;
+    double stage = 0;
     while (vr_accumulator >= 1.0 / NTSC_FPS && count < 6) {
-        uint16_t buttons = vr_diagnostic ? vr_script_pad(vr_sim_frames) : input->buttons;
-        int steering = vr_diagnostic ? 0 : analog_stick_target(input->steer * 32767, stick_dead_zone);
-        int throttle = vr_diagnostic ? 0 : analog_trigger_amount(input->throttle * 32767, trigger_dead_zone);
-        int brake = vr_diagnostic ? 0 : analog_trigger_amount(input->brake * 32767, trigger_dead_zone);
+        int scripted = vr_diagnostic || vr_replay;
+        uint16_t buttons = scripted ? vr_script_pad(vr_sim_frames) : input->buttons;
+        int steering = scripted ? 0 : analog_stick_target(input->steer * 32767, stick_dead_zone);
+        int throttle = scripted ? 0 : analog_trigger_amount(input->throttle * 32767, trigger_dead_zone);
+        int brake = scripted ? 0 : analog_trigger_amount(input->brake * 32767, trigger_dead_zone);
         analog_set_input(steering, throttle, brake);
+        if (timing) stage = now_seconds();
+        vr_cpu_enter();
         run_frame(buttons);
+        if (!vr_cpu_leave()) return -1;
+        if (timing) { timing->simulation += now_seconds()-stage; stage = now_seconds(); }
         if (vr_diagnostic) {
             print_frame_hashes(vr_sim_frames);
             vr_hash(&vr_audio_hash, core_audio_samples, core_audio_frame_count * 4);
             vr_hash(&vr_video_hash, core_screen, sizeof(uint16_t) * CORE_SCREEN_WIDTH * CORE_SCREEN_HEIGHT);
         } else
             queue_audio();
+        if (timing) timing->audio += now_seconds()-stage;
         vr_sim_frames++;
         count++;
         vr_accumulator -= 1.0 / NTSC_FPS;
     }
+    if (timing) { timing->ticks=count; stage=now_seconds(); }
     if (count)
         upload_frame();
+    if (timing) { timing->frame_upload=now_seconds()-stage; stage=now_seconds(); }
     /* A race picture's original masks identify transitions and flat menus/results.
        Rebuild only while the game still submits fresh geometry, before the eyes. */
     vr_immersive = hle_visible && hle_visible->command == HLE_RACE_COMMAND && !in_transition &&
                    !(layers.x32_hud_types & ((1u << 7) | (1u << 8) | (1u << 10)));
-    vr_scene = vr_immersive ? hle_vr_prepare(vr_accumulator * NTSC_FPS) : NULL;
+    if (vr_immersive) {
+        vr_cpu_enter();
+        vr_scene = hle_vr_prepare(vr_accumulator * NTSC_FPS);
+        if (!vr_cpu_leave()) return -1;
+    } else vr_scene = NULL;
+    if (timing) { timing->mesh=now_seconds()-stage; stage=now_seconds(); }
     if (vr_scene && vr_scene->overflow) {
         fprintf(stderr, "[vr] mesh capacity exceeded\n");
         vr_immersive = 0;
@@ -225,7 +240,9 @@ static int vr_prepare(double time, double period, int active, const vr_input_t *
         glBufferData(GL_ARRAY_BUFFER, vr_scene->count * sizeof(hle_vr_vertex_t), vr_scene->vertices,
                      GL_STREAM_DRAW);
     }
+    if (timing) { timing->vertex_upload=now_seconds()-stage; timing->vertices=vr_scene?vr_scene->count:0; stage=now_seconds(); }
     vr_panel_upload();
+    if (timing) timing->hud=now_seconds()-stage;
     vr_display_frames++;
     return vr_immersive;
 }

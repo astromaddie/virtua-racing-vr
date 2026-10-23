@@ -235,10 +235,54 @@ frame. Normal launch arms none of these settings. The launcher's
 
 Every ten seconds `[vr-perf]` reports windowed display/emulation rate, submitted
 and diagnostic-rendered frame counts, CPU wait/prepare/eye/acquire/release times,
-and available asynchronous per-eye GPU elapsed-query results. Pending queries
-are skipped, never waited on. Exclude startup/warm-up and the explicit capture
+and available asynchronous per-eye GPU elapsed-query results when
+`VRDE_VR_TIMING_GPU=1`. Queries are off in normal play; pending queries are
+skipped, never waited on. Exclude startup/warm-up and the explicit capture
 window when comparing fixed-scene runs. Submitted frames and offscreen forced
 renders are separate counters; standby rendering is not compositor acceptance.
+
+`VRDE_VR_TIMING=1` records up to 32,768 per-frame CPU timing rows in memory,
+then writes `vr-timing.csv` in the working directory on exit. It separates
+emulation, audio queueing, frame uploads, mesh preparation, vertex uploads, HUD,
+eye acquisition/draw/release, query polling and frame submission. GPU results
+are attributed to the frame that issued them. Startup logs pair the local
+performance clock with real time for external correlation. The recorder performs
+no per-frame file writes or readbacks. Its `start_s` intervals also reveal work
+between frames that falls outside the individual stage spans.
+
+For a finite timing replay, `VRDE_VR_REPLAY=1` alongside `VRDE_VR_AUTO_EXIT`
+uses the supplied chronological `-p` inputs with ordinary settings, audio and
+rendering. Unlike parity diagnostics, it does not hash/log every emulation tick
+or substitute diagnostic graphics settings. Use `VRDE_VR_FORCE_RENDER=1` only
+when an explicitly labelled standby workload is needed. Compare matching
+simulation ranges and tick/non-tick frames separately; a 120 Hz average can
+conceal emulation ticks that exceed the display period.
+
+The wide sky panorama decodes each eight-pixel tile span once, then copies
+repeated horizontal plane periods. It still reads the current VRAM, palette and
+scroll at every emulated frame start; there is no stale-frame cache. `make
+skytest` compares every output pixel and panorama metadata with the original
+per-pixel formula across plane sizes, scroll boundaries, wraps, flips and palettes.
+
+On heterogeneous Linux CPUs, the XR main thread uses the highest-capacity CPUs
+within its original allowed mask while running the synchronous emulator and HLE
+mesh preparation. Capacity and allowed-mask discovery happen once at XR startup.
+Each scope restores the original mask before SDL audio, GL or OpenXR calls, so
+existing workers and lazily created driver/runtime threads keep their own normal
+placement. Missing topology, homogeneous CPUs or a failed narrowing retain normal
+scheduling; a failed restoration stops the frame before external work. This changes
+neither global scheduling nor priorities/clocks. `VRDE_VR_CPU_AFFINITY=0` disables
+the policy for matched controls; `make vrcputest` checks selection, permitted-mask
+limits, ties, opt-out, fallback and restoration. Flat and host geometry diagnostics
+do not initialize this XR-only policy.
+
+VR's SH2 HUD observer filters irrelevant accesses before the interpreter's
+indirect callback. Only master HUD-list reads and framebuffer writes reach the
+unchanged HUD consumer. Memory accesses, instruction timing and emulated state
+still execute in full. Flat rendering and trace tools retain complete observer
+delivery. `VRDE_VR_HUD_FILTER=0` restores full delivery for a same-binary
+comparison; `make vrhudtest` checks the actual dispatch against HUD state across
+buffer changes, cached aliases, list entries and transparent writes.
 
 Verified host results for the checked-in Big Forest input script:
 

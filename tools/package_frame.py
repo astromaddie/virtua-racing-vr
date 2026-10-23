@@ -23,6 +23,8 @@ SDK_SOURCE = BUILD / "openxr-sdk-1.1.63" / "source"
 PACKAGE_PARENT = BUILD / "package"
 ROM_SUFFIXES = {".32x", ".gp0", ".mds", ".srm"}
 OWNED_UNTRACKED_SOURCE = {
+    "third_party/picodrive/pico/vrde_trace.h", "tests/vr_hud_observer_test.c", "tests/layers_sky_test.c",
+    "src/vr_cpu.c", "src/vr_cpu.h", "tests/vr_cpu_test.c",
     "tools/skid_corner_inputs.txt", "src/vr_skids.c", "src/vr_skids.h", "tests/vr_skids_test.c", "tests/vr_skids_rom_test.c",
     "tests/vr_surface_gl_test.c", "tests/vr_surface_rom_test.c",
     "src/vr_xr.c", "src/vr_xr.h", "src/vr_math.c", "src/vr_math.h",

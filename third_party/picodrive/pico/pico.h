@@ -58,8 +58,7 @@ extern void (*vrde_comm_write_hook)(int writer, unsigned int pc, unsigned int of
 extern void (*vrde_dreq_write_hook)(int is_slave, unsigned int address, unsigned int value);
 // Every data read and write of the SH2 interpreter (instruction fetches arrive with
 // address == pc). value is zero-extended to size bytes.
-extern void (*vrde_sh2_access_hook)(int is_slave, unsigned int pc, unsigned int address,
-  unsigned int value, int size, int is_write);
+#include "vrde_trace.h"
 // Called just before the 32X layer is laid over visible lines first_line to
 // first_line + line_count - 1 (output rows screen_offset + those), with the 32X state of
 // that moment. x32_enabled = 0: the 32X is blanking, those lines stay Mega Drive only.

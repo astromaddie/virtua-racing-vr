@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static volatile sig_atomic_t stopped;
 static void stop_signal(int sig)
@@ -268,6 +269,7 @@ typedef struct {
     PFNGLGETQUERYOBJECTUI64VPROC result;
     GLuint query[4][2];
     int pending[4][2];
+    unsigned owner[4][2];
 } gpu_timers_t;
 static void gpu_timers_init(gpu_timers_t *timers)
 {
@@ -285,6 +287,37 @@ typedef struct {
     long simulation;
 } performance_t;
 
+/* Bounded CPU recorder. No file writes, readbacks or waits during frames.
+   GPU results retain their issuing frame number, even when read much later. */
+enum { TIMING_CAPACITY = 32768 };
+typedef struct {
+    double start, wait, begin, locate, prepare, acquire[2], timer[2], eye[2], release[2], panel, end, total;
+    double gpu[2];
+    XrTime predicted, period;
+    long simulation;
+    int draw, submitted, immersive;
+    vr_prepare_timing_t work;
+} frame_timing_t;
+static void timing_save(const frame_timing_t *rows, unsigned count)
+{
+    if (!rows) return;
+    FILE *f=fopen("vr-timing.csv","w");
+    if (!f) { perror("vr-timing.csv"); return; }
+    fputs("frame,start_s,predicted_ns,period_ns,simulation,draw,submitted,immersive,ticks,vertices,wait_ms,begin_ms,locate_input_ms,prepare_ms,simulation_ms,audio_ms,frame_upload_ms,mesh_ms,vertex_upload_ms,hud_ms,acquire_left_ms,timer_left_ms,eye_left_ms,release_left_ms,acquire_right_ms,timer_right_ms,eye_right_ms,release_right_ms,panel_ms,end_ms,total_ms,gpu_left_ms,gpu_right_ms\n",f);
+    for(unsigned i=0;i<count;i++) {
+        const frame_timing_t *r=rows+i;
+        fprintf(f,"%u,%.9f,%lld,%lld,%ld,%d,%d,%d,%u,%u",i+1,r->start,
+                (long long)r->predicted,(long long)r->period,r->simulation,r->draw,r->submitted,r->immersive,r->work.ticks,r->work.vertices);
+        const double values[]={r->wait,r->begin,r->locate,r->prepare,r->work.simulation,r->work.audio,
+            r->work.frame_upload,r->work.mesh,r->work.vertex_upload,r->work.hud,
+            r->acquire[0],r->timer[0],r->eye[0],r->release[0],r->acquire[1],r->timer[1],r->eye[1],r->release[1],r->panel,r->end,r->total};
+        for(unsigned k=0;k<sizeof(values)/sizeof(values[0]);k++)fprintf(f,",%.6f",values[k]*1000);
+        fprintf(f,",%.6f,%.6f\n",r->gpu[0],r->gpu[1]);
+    }
+    fclose(f);
+    printf("[vr-perf] timing_file=vr-timing.csv rows=%u capacity=%d\n",count,TIMING_CAPACITY);
+}
+
 int vr_xr_run(SDL_Window *window, const vr_callbacks_t *cb)
 {
     XrInstance instance = 0;
@@ -298,6 +331,8 @@ int vr_xr_run(SDL_Window *window, const vr_callbacks_t *cb)
     int running = 0, result = 1, quit = 0, exiting = 0, frame_started = 0;
     XrSessionState state = XR_SESSION_STATE_UNKNOWN;
     XrTime predicted = 0;
+    frame_timing_t *timing = NULL;
+    unsigned timing_count = 0;
     double started = seconds(), exit_at = 0, limit = vr_env("VRDE_VR_AUTO_EXIT", 0, 0, 3600);
     int force = limit > 0 && vr_env("VRDE_VR_FORCE_RENDER", 0, 0, 1);
     sfvr_view_button view_button = {0};
@@ -439,7 +474,19 @@ int vr_xr_run(SDL_Window *window, const vr_callbacks_t *cb)
     unsigned long frames = 0, rendered = 0, standby = 0;
     performance_t perf = {.start = seconds(), .simulation = cb->simulation_frames()};
     gpu_timers_t timers = {0};
-    gpu_timers_init(&timers);
+    int timing_gpu = vr_env("VRDE_VR_TIMING_GPU", 0, 0, 1);
+    if (timing_gpu) gpu_timers_init(&timers);
+    if (vr_env("VRDE_VR_TIMING", 0, 0, 1)) {
+        timing = calloc(TIMING_CAPACITY,sizeof(*timing));
+        if (!timing) goto cleanup;
+        /* Touch pages before recording, outside the frame deadline. */
+        for(unsigned i=0;i<TIMING_CAPACITY;i++)timing[i].gpu[0]=timing[i].gpu[1]=-1;
+    }
+    struct timespec wall;
+    clock_gettime(CLOCK_REALTIME,&wall);
+    printf("[vr-perf] timing=%d timing_gpu=%d realtime_ns=%lld clock_s=%.9f force=%d\n",
+           timing!=NULL,timing_gpu,(long long)wall.tv_sec*1000000000+wall.tv_nsec,seconds(),force);
+    vr_cpu_init(vr_env("VRDE_VR_CPU_AFFINITY", 1, 0, 1));
     while (!quit) {
         SDL_Event event;
         while (SDL_PollEvent(&event))
@@ -496,12 +543,18 @@ int vr_xr_run(SDL_Window *window, const vr_callbacks_t *cb)
         XrFrameWaitInfo wi = {XR_TYPE_FRAME_WAIT_INFO};
         XrFrameState fs = {XR_TYPE_FRAME_STATE};
         double stage = seconds();
+        frame_timing_t *row = timing && frames<TIMING_CAPACITY ? timing+frames : NULL;
+        if (row) row->start=stage;
         TRY(xrWaitFrame(session, &wi, &fs));
         perf.wait += seconds() - stage;
+        if (row) { row->wait=seconds()-stage; row->predicted=fs.predictedDisplayTime; row->period=fs.predictedDisplayPeriod; }
         perf.frames++;
         predicted = fs.predictedDisplayTime;
         XrFrameBeginInfo bi = {XR_TYPE_FRAME_BEGIN_INFO};
+        stage=seconds();
         TRY(xrBeginFrame(session, &bi));
+        if (row) row->begin=seconds()-stage;
+        stage=seconds();
         frame_started = 1;
         frames++;
         XrView views[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
@@ -537,6 +590,7 @@ int vr_xr_run(SDL_Window *window, const vr_callbacks_t *cb)
         int pressed = 0;
         vr_input_t input =
             sample(instance, session, set, actions, state == XR_SESSION_STATE_FOCUSED, &pressed);
+        input.timing=row?&row->work:NULL;
         if (!input.focused)
             sfvr_view_reset(&view_button);
         unsigned events = sfvr_view_update(&view_button, NULL, pressed, predicted * 1e-9);
@@ -555,10 +609,13 @@ int vr_xr_run(SDL_Window *window, const vr_callbacks_t *cb)
             anchor = origin;
             recenter = 0;
         }
+        if (row) row->locate=seconds()-stage;
         stage = seconds();
         int immersive = cb->prepare(predicted * 1e-9, fs.predictedDisplayPeriod * 1e-9,
                                     draw && (input.focused || force), &input);
+        if (immersive < 0) goto cleanup;
         perf.prepare += seconds() - stage;
+        if (row) { row->prepare=seconds()-stage; row->simulation=cb->simulation_frames(); row->draw=draw; row->immersive=immersive; }
         if (immersive != was_immersive) {
             anchor = origin;
             was_immersive = immersive;
@@ -580,6 +637,7 @@ int vr_xr_run(SDL_Window *window, const vr_callbacks_t *cb)
                 if (!acquire(instance, &chains[eye], framebuffer))
                     goto cleanup;
                 perf.acquire += seconds() - stage;
+                if (row) row->acquire[eye]=seconds()-stage;
                 XrPosef relative = vr_relative_pose(views[eye].pose, origin);
                 /* Clamp physical lean; preserve measured eye offset about the head centre. */
                 XrPosef head = vr_relative_pose(centre, origin);
@@ -592,6 +650,7 @@ int vr_xr_run(SDL_Window *window, const vr_callbacks_t *cb)
                     relative.position.z += head.position.z * k;
                 }
                 int slot = frames % 4;
+                if (row) stage=seconds();
                 if (timers.query[slot][eye] && timers.pending[slot][eye]) {
                     GLint ready = 0;
                     timers.available(timers.query[slot][eye], GL_QUERY_RESULT_AVAILABLE, &ready);
@@ -600,12 +659,15 @@ int vr_xr_run(SDL_Window *window, const vr_callbacks_t *cb)
                         timers.result(timers.query[slot][eye], GL_QUERY_RESULT, &ns);
                         perf.gpu[eye] += ns * 1e-6;
                         perf.gpu_samples[eye]++;
+                        unsigned owner=timers.owner[slot][eye];
+                        if (timing && owner<TIMING_CAPACITY)timing[owner].gpu[eye]=ns*1e-6;
                         timers.pending[slot][eye] = 0;
                     }
                 }
                 int measure = timers.query[slot][eye] && !timers.pending[slot][eye];
                 if (measure)
                     timers.begin(GL_TIME_ELAPSED, timers.query[slot][eye]);
+                if (row) row->timer[eye]=seconds()-stage;
                 stage = seconds();
                 GLboolean multisample_was_enabled = glIsEnabled(GL_MULTISAMPLE);
                 GLboolean srgb_was_enabled = glIsEnabled(GL_FRAMEBUFFER_SRGB);
@@ -617,6 +679,7 @@ int vr_xr_run(SDL_Window *window, const vr_callbacks_t *cb)
                 if (measure) {
                     timers.end(GL_TIME_ELAPSED);
                     timers.pending[slot][eye] = 1;
+                    timers.owner[slot][eye] = frames-1;
                 }
                 if (multisample_was_enabled)
                     glEnable(GL_MULTISAMPLE);
@@ -631,20 +694,24 @@ int vr_xr_run(SDL_Window *window, const vr_callbacks_t *cb)
                 if (cb->resolved_eye)
                     cb->resolved_eye(eye, relative, chains[eye].w, chains[eye].h);
                 perf.eyes += seconds() - stage;
+                if (row) row->eye[eye]=seconds()-stage;
                 stage = seconds();
                 if (!release(instance, &chains[eye]))
                     goto cleanup;
                 perf.release += seconds() - stage;
+                if (row) row->release[eye]=seconds()-stage;
                 pv[eye].pose = views[eye].pose;
                 pv[eye].fov = views[eye].fov;
                 pv[eye].subImage.swapchain = chains[eye].handle;
                 pv[eye].subImage.imageRect.extent = (XrExtent2Di){chains[eye].w, chains[eye].h};
             }
+            stage=seconds();
             if (!acquire(instance, &chains[2], framebuffer))
                 goto cleanup;
             cb->panel(640, 448, immersive);
             if (!release(instance, &chains[2]))
                 goto cleanup;
+            if (row) row->panel=seconds()-stage;
             panel.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
             panel.subImage.swapchain = chains[2].handle;
             panel.subImage.imageRect.extent = (XrExtent2Di){640, 448};
@@ -668,7 +735,9 @@ int vr_xr_run(SDL_Window *window, const vr_callbacks_t *cb)
         end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
         end.layerCount = draw && fs.shouldRender ? 2 : 0;
         end.layers = end.layerCount ? layers : NULL;
+        stage=seconds();
         TRY(xrEndFrame(session, &end));
+        if (row) { row->end=seconds()-stage; row->total=seconds()-row->start; row->submitted=end.layerCount!=0; timing_count++; }
         perf.submitted += end.layerCount != 0;
         frame_started = 0;
         if (seconds() - perf.start >= 10) {
@@ -692,6 +761,9 @@ int vr_xr_run(SDL_Window *window, const vr_callbacks_t *cb)
     printf("[vr] stopped frames=%lu rendered=%lu standby=%lu\n", frames, rendered, standby);
     result = 0;
 cleanup:
+    vr_cpu_shutdown();
+    timing_save(timing,timing_count);
+    free(timing);
     for (int i = 0; i < 3; i++)
         if (chains[i].waited)
             release(instance, &chains[i]);

@@ -151,14 +151,6 @@ static int plane_cells(int size_bits)
 	return size_bits == 1 ? 64 : size_bits == 3 ? 128 : 32;
 }
 
-/* A pixel of a tile in VRAM (PicoDrive keeps it as 16-bit words): 4 bits, the leftmost
-   pixel in the high bits */
-static int tile_pixel(int tile, int x, int y)
-{
-	uint16_t word = PicoMem.vram[(tile * 32 + y * 4 + (x / 4) * 2) / 2];
-	return (word >> (12 - 4 * (x % 4))) & 15;
-}
-
 int layers_plane_b_scroll(void)
 {
 	int hscroll_table = (Pico.video.reg[13] & 0x3F) << 10;
@@ -183,14 +175,33 @@ static void draw_plane_b_wide(void)
 	for (int row = 0; row < LAYERS_HEIGHT; row++) {
 		int line = row - core_visible_top;
 		int py = (line + vscroll) & (height * 8 - 1);
-		for (int i = 0; i < SKY_WIDTH; i++) {
+		/* Decode each tile row once per span, rather than looking up its map
+		   entry and flips again for every pixel. A plane repeats after width*8
+		   pixels; the wider panorama can copy that already decoded period. */
+		int period = width * 8;
+		int decoded = period < SKY_WIDTH ? period : SKY_WIDTH;
+		for (int i = 0; i < decoded;) {
 			int px = (i - SKY_MARGIN - hscroll) & (width * 8 - 1);
 			uint16_t entry = PicoMem.vram[(nametable + ((py / 8) * width + px / 8) * 2) / 2];
-			int tx = entry & 0x0800 ? 7 - px % 8 : px % 8;   /* flipped across, down */
 			int ty = entry & 0x1000 ? 7 - py % 8 : py % 8;
-			int pixel = tile_pixel(entry & 0x7FF, tx, ty);
-			int index = pixel ? ((entry >> 13) & 3) * 16 + pixel : background;
-			layers.md_wide[row][i] = Pico.est.HighPal[index];
+			const uint16_t *tile = &PicoMem.vram[(entry & 0x7FF) * 16 + ty * 2];
+			uint32_t pixels = ((uint32_t)tile[0] << 16) | tile[1];
+			int offset = px & 7;
+			int count = 8 - offset;
+			if (count > decoded - i) count = decoded - i;
+			int shift = entry & 0x0800 ? offset * 4 : (7 - offset) * 4;
+			int step = entry & 0x0800 ? 4 : -4;
+			int palette = ((entry >> 13) & 3) * 16;
+			for (int j = 0; j < count; j++, shift += step) {
+				int pixel = (pixels >> shift) & 15;
+				layers.md_wide[row][i++] = Pico.est.HighPal[pixel ? palette + pixel : background];
+			}
+		}
+		for (int i = decoded; i < SKY_WIDTH;) {
+			int count = SKY_WIDTH - i;
+			if (count > period) count = period;
+			memcpy(&layers.md_wide[row][i], layers.md_wide[row], count * sizeof(uint16_t));
+			i += count;
 		}
 	}
 }

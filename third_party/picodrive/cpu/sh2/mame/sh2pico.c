@@ -54,14 +54,11 @@ MAKE_WRITEFUNC(WL, p32x_sh2_write32)
 // VRDE: every interpreter memory access goes through these, so they also report it to
 // an optional hook (declared in pico/pico.h, NULL = off). ppc is the current
 // instruction's address; instruction fetches arrive with address == ppc.
-extern void (*vrde_sh2_access_hook)(int is_slave, unsigned int pc, unsigned int address,
-	unsigned int value, int size, int is_write);
+#include "../../../pico/vrde_trace.h"
 
 static inline unsigned int vrde_report(SH2 *sh2, unsigned int a, unsigned int d, int size, int is_write)
 {
-	if (vrde_sh2_access_hook)
-		vrde_sh2_access_hook(sh2->is_slave, sh2->ppc, a, d, size, is_write);
-	return d;
+	return vrde_sh2_report(sh2->is_slave, sh2->ppc, a, d, size, is_write);
 }
 
 static inline unsigned int RB(SH2 *sh2, unsigned int a) { return vrde_report(sh2, a, p32x_sh2_read8(a, sh2) & 0xff, 1, 0); }

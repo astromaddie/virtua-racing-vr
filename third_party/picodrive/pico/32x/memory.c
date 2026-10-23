@@ -318,6 +318,7 @@ void (*vrde_comm_write_hook)(int writer, unsigned int pc, unsigned int offset, u
 void (*vrde_dreq_write_hook)(int is_slave, unsigned int address, unsigned int value);
 void (*vrde_sh2_access_hook)(int is_slave, unsigned int pc, unsigned int address,
   unsigned int value, int size, int is_write);
+int vrde_sh2_access_filter; /* Zero preserves the complete trace-tool contract. */
 
 // SH2 faking
 //#define FAKE_SH2

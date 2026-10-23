@@ -3036,7 +3036,8 @@ int main(int argc, char **argv)
 	int checking = dump_frame >= 0;
 #ifdef VRDE_VR
     if(vr_mode&&checking){fprintf(stderr,"--vr and -d are separate modes\n");return 1;}
-    vr_diagnostic=vr_mode&&vr_env("VRDE_VR_AUTO_EXIT",0,0,3600)>0&&vr_env("VRDE_VR_FORCE_RENDER",0,0,1);
+    vr_replay=vr_mode&&vr_env("VRDE_VR_AUTO_EXIT",0,0,3600)>0&&vr_env("VRDE_VR_REPLAY",0,0,1);
+    vr_diagnostic=vr_mode&&!vr_replay&&vr_env("VRDE_VR_AUTO_EXIT",0,0,3600)>0&&vr_env("VRDE_VR_FORCE_RENDER",0,0,1);
     if(diag_frames||vr_diagnostic)checking=1;
 #endif
 	if (checking) {
@@ -3085,6 +3086,10 @@ int main(int argc, char **argv)
 	vrde_comm_write_hook = on_comm_write;
 	vrde_dreq_write_hook = on_dreq_write;
 	vrde_sh2_access_hook = on_sh2_access;
+#ifdef VRDE_VR
+    vrde_sh2_access_filter = vr_mode && vr_env("VRDE_VR_HUD_FILTER",1,0,1)
+        ? VRDE_SH2_TRACE_HUD : VRDE_SH2_TRACE_ALL;
+#endif
 	/* The core finishes starting up in its first frame: a state loaded before that crashed
 	   it in the first frame after (in the PSG's update). Loading with key P, frames have
 	   run already. */
@@ -3107,8 +3112,10 @@ int main(int argc, char **argv)
         vr_graphics_init();
         if(diag_frames)return vr_host_diagnostic(diag_frames,script_frame,script_buttons,script_length);
         vr_script_frames=script_frame;vr_script_buttons=script_buttons;vr_script_length=script_length;
-        vr_diagnostic=vr_env("VRDE_VR_AUTO_EXIT",0,0,3600)>0 && vr_env("VRDE_VR_FORCE_RENDER",0,0,1);
+        vr_diagnostic=!vr_replay&&vr_env("VRDE_VR_AUTO_EXIT",0,0,3600)>0 && vr_env("VRDE_VR_FORCE_RENDER",0,0,1);
         if(!vr_diagnostic)open_audio();
+        printf("[vr] replay=%d parity_diagnostic=%d audio=%d far_view=%d detailed_opponents=%d near_limit=%d hud_filter=%d\n",
+               vr_replay,vr_diagnostic,audio.device!=0,far_view,detailed_opponents,!checking,vrde_sh2_access_filter);
         const vr_callbacks_t callbacks={vr_prepare,vr_eye,vr_eye_resolved,vr_panel,vr_simulation_frames};
         int result=vr_xr_run(window,&callbacks);SDL_Quit();return result;
     }
