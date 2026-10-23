@@ -7,6 +7,36 @@ void vr_skids_reset(vr_skids *s) { memset(s, 0, sizeof(*s)); }
 void vr_skids_cut(vr_skids *s) { memset(s->cars, 0, sizeof(s->cars)); }
 static float cross(vr_skid_point a, vr_skid_point b, vr_skid_point p)
 { return (b.x-a.x)*(p.z-a.z)-(b.z-a.z)*(p.x-a.x); }
+int vr_road_overlay(const vr_skid_point triangle[3], const vr_skid_point road[3])
+{
+    float area=cross(road[0],road[1],road[2]);
+    if(fabsf(area)<.01f)return 0;
+    float ux=road[1].x-road[0].x,uy=road[1].y-road[0].y,uz=road[1].z-road[0].z;
+    float vx=road[2].x-road[0].x,vy=road[2].y-road[0].y,vz=road[2].z-road[0].z;
+    float nx=uy*vz-uz*vy,nz=ux*vy-uy*vx;
+    if(area*area<.64f*(nx*nx+area*area+nz*nz))return 0;
+    for(int i=0;i<3;i++) {
+        float y=road[0].y+(nx*(triangle[i].x-road[0].x)+nz*(triangle[i].z-road[0].z))/area;
+        if(fabsf(triangle[i].y-y)>.01f)return 0;
+    }
+    vr_skid_point a[8],b[8];int n=3;memcpy(a,triangle,3*sizeof(*a));
+    for(int edge=0;edge<3&&n;edge++) {
+        int m=0;
+        for(int i=0;i<n;i++) {
+            vr_skid_point p=a[i],q=a[(i+1)%n];
+            float dp=cross(road[edge],road[(edge+1)%3],p)/area;
+            float dq=cross(road[edge],road[(edge+1)%3],q)/area;
+            if(dp>=0)b[m++]=p;
+            if((dp<0)!=(dq<0)) {
+                float t=dp/(dp-dq);
+                b[m++]=(vr_skid_point){p.x+(q.x-p.x)*t,0,p.z+(q.z-p.z)*t};
+            }
+        }
+        n=m;memcpy(a,b,n*sizeof(*a));
+    }
+    for(int i=1;i<n-1;i++)if(fabsf(cross(a[0],a[i],a[i+1]))>.01f)return 1;
+    return 0;
+}
 static unsigned episode_hash(unsigned x)
 {
     x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu;
@@ -103,7 +133,7 @@ void vr_skids_project(vr_skids *s, const vr_skid_point quad[4],
         /* The original car ride height is ~4.2 units above the rendered asphalt;
            a small tolerance accepts that, but never projects airborne cars down. */
         if (fabsf(a[i].y-y)>6) return;
-        a[i].y=y+.08f;
+        a[i].y=y; /* The shared road-overlay draw supplies depth bias. */
     }
     for (int i=1;i<n-1;i++) {
         if (fabsf(cross(a[0],a[i],a[i+1]))<.01f) continue;

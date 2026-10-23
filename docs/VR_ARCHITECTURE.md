@@ -70,11 +70,11 @@ composition. `VRDE_VR_HUD_DISTANCE` accepts 1–5 m. Sky sampling and polygon
 palette output are already gamma encoded: framebuffer sRGB conversion is
 disabled when copying these into the required sRGB swapchains.
 
-Native VR eyes use fixed **4× MSAA**, with same-size sRGB8-alpha8 colour and
+Native VR eyes use fixed **2× MSAA**, with same-size sRGB8-alpha8 colour and
 24-bit depth renderbuffers. The OpenXR images remain single-sample. Each eye
 resolves colour into its acquired image before diagnostic readback and release;
 the GPU eye timer includes that resolve. Both attachments must actually have
-four samples and form a complete framebuffer, or initialization stops with a
+two samples and form a complete framebuffer, or initialization stops with a
 diagnostic. There is no VR AA selector or automatic sample-count reduction.
 The existing game MSAA setting continues to control only the flat HLE renderer.
 
@@ -83,6 +83,37 @@ The matching-format resolve enables sRGB conversion only for the blit and then
 restores the prior state. Where available, the resolve invalidates its temporary
 colour and depth attachments immediately afterward to avoid unnecessary sample
 storage on tiled GPUs. HUD/menu panels retain their separate single-sample path.
+
+## Road depth and car contact
+
+The original renderer uses painter sorting for coplanar road detail. VR draws
+opaque geometry first, then original road paint, baked marks and persistent
+ribbons in one depth-tested overlay pass with `glPolygonOffset(-1,-2)` and depth
+writes disabled. This retains road/car/prop occlusion while preventing overlays
+from fighting the asphalt or one another. Depth writes and polygon-offset state
+are restored after the pass. Both passes use the same immutable vertex buffer.
+
+A lazy per-course cache identifies track triangles with positive-area overlap
+on an asphalt triangle's plane. Paint can straddle an asphalt edge; adjacent
+terrain sharing only an edge, raised kerbs and vertical faces do not qualify.
+Object/car meshes are never classified as road detail. Material colours and
+painter-sort header bits alone are insufficient. The classification is cached
+once per track model, shares the bounded road cache, and fails closed on overflow.
+
+Original rotating tyre meshes sit roughly four world units above the rendered
+road for all three car kinds. VR lowers the complete car assembly, including
+children and car-relative effects, by four world units along world Y. This is a
+constant visual pivot correction: physical poses, camera placement, wheel spin,
+suspension and airborne displacement remain intact. The independent projection
+check uses car provenance and this explicit transform rather than relaxing its
+error tolerance. Flat rendering receives neither correction.
+
+`build/vr_surface_rom_test ROM [0|1|2]` exercises all car kinds and pitched/rolled
+poses through the real record renderer, and checks overlay coverage on all five
+course grids. `build/vr_surface_gl_test --vr-diagnostic ... ROM` uses the real
+production eye callback at 24 nearby poses, comparing its bias to disabled and
+stronger bias while checking state restoration and ordinary depth occlusion.
+It requires a GL implementation supporting the exact configured sample count.
 
 ## Persistent tyre marks
 
@@ -109,23 +140,23 @@ rear tyre widths of 5.859375, 6.5625 and 5.609375 world units, confirmed from
 their ROM asset packs. Body X/Z words are final world units; Y and wheel
 placements divide by 16; object mesh vertices divide by 64. A lazy bounded
 cache decodes only the current course grid's asphalt polygons (alternating
-palette indices 12/13, verified present in all five course grids). Each ribbon
+palette indices 12/13/14, verified present in all five course grids). Each ribbon
 is clipped to those triangles and follows
 their actual height and slope. The contact tolerance accommodates the original
 ride height; airborne tyres, grass, water, kerbs, vertical faces, props and cars
-are excluded. Marks use the existing palette and depth-tested mesh draw, raised
-0.08 world units from the receiving triangle. New segments appear only once
+are excluded. Marks use the existing palette and lie exactly on the receiving
+triangle; the road-overlay pass supplies their depth bias. New segments appear only once
 the interpolated presentation has reached their source tick. Both eyes see the
 same immutable triangles.
 
 The fixed ring holds 8,192 triangles, replacing the oldest only when full; the
 road cache holds at most 16,384 triangles and fails closed when full. Combined
-persistent storage is under 1 MiB. Drawing is limited to the existing reached
+persistent storage, including cached road-overlay flags, is under 1.5 MiB. Drawing is limited to the existing reached
 track cells and an 8,192-unit camera radius. Marks survive laps, pauses, focus
 loss and view changes; a discontinuity only breaks connecting trails. Leaving
 race command 2, results HUD types 7/8/10, a changed course grid or `hle_reset()`
 (including the existing state-load route) clears them. There is no setting,
-physics/RNG write, extra draw call, shader change or change to fixed 4× MSAA.
+physics/RNG write or shader change.
 The ordinary flat build excludes the entire feature.
 
 `make vrskidtest` covers sound-threshold hysteresis, straight/reverse motion,
@@ -258,7 +289,7 @@ This measures forced texture rendering with the runtime in standby: only one
 frame received compositor submission permission. It does not establish
 sustained visible presentation, optical quality or interaction acceptance.
 These timings describe the original single-sample eye renderer; they are not
-measurements of the fixed 4× MSAA path.
+measurements of the fixed 2× MSAA path.
 An ordinary Steam launch with diagnostics absent also created the expected
 swapchains, entered VISIBLE, froze simulation during standby, and shut down
 through the normal window-close/session-stop path. All three controller

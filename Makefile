@@ -169,3 +169,10 @@ vrskidtest: tests/vr_skids_test.c src/vr_skids.c src/vr_skids.h
 # Optional real-game integration: supply your own ROM; never writes game data.
 build/vr_skids_rom_test: tests/vr_skids_rom_test.c src/hle.c src/hle.h src/vr_skids.c src/vr_skids.h $(OUR_COMMON) $(CORE_OBJECTS)
 	$(CC) $(OUR_CFLAGS) -Isrc tests/vr_skids_rom_test.c src/vr_skids.c src/core.c src/m68kpatch.c src/analog.c $(CORE_OBJECTS) -lz -lm -o $@
+
+build/vr_surface_rom_test: tests/vr_surface_rom_test.c src/hle.c src/hle.h src/vr_skids.c src/vr_skids.h $(OUR_COMMON) $(CORE_OBJECTS)
+	$(CC) $(OUR_CFLAGS) -Isrc tests/vr_surface_rom_test.c src/vr_skids.c src/core.c src/m68kpatch.c src/analog.c $(CORE_OBJECTS) -lz -lm -o $@
+
+# Real-ROM moving-pose road-depth regression using the production eye callback.
+build/vr_surface_gl_test: tests/vr_surface_gl_test.c $(VRDE_SOURCES) $(VRDE_HEADERS) $(HLE_SOURCES) $(OUR_COMMON) $(CORE_OBJECTS) $(VR_SOURCES) $(VR_HEADERS)
+	$(CC) $(OUR_CFLAGS) -DVRDE_VR -Isrc -I$(OPENXR_PREFIX)/include $$($(SDL2_CONFIG) --cflags) $(filter-out src/vrde.c,$(filter %.c %.o,$^)) $$($(SDL2_CONFIG) --libs) $(GL_LIBS) -lX11 -lz -lm $(OPENXR_PREFIX)/lib/libopenxr_loader.a -ldl -pthread -lstdc++ -static-libstdc++ -static-libgcc -o $@

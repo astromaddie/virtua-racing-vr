@@ -39,6 +39,9 @@ typedef struct {
 	   centre as x is (the course map's +100, the needle's -148; 0 for a model with no
 	   place of its own and for the 3D) */
 	int hud_anchor;
+#ifdef VRDE_VR
+    int vr_car; /* Diagnostic provenance: receives the VR-only visual pivot correction. */
+#endif
 } hle_polygon_t;
 
 enum {
@@ -143,9 +146,10 @@ void hle_reset(void);
 typedef struct { float x, y, z; uint32_t colour; } hle_vr_vertex_t;
 typedef struct {
     int count, overflow, scene;
-    int skid_first;
+    int decal_first, skid_first;
     unsigned skid_count, skid_total, skid_cars[16];
     float native_pitch, native_roll, car_length;
+    float car_lowering[3]; /* camera-space vector, in world units */
     hle_vr_vertex_t vertices[HLE_VR_MAX_VERTICES];
 } hle_vr_mesh_t;
 const hle_vr_mesh_t *hle_vr_prepare(double fraction);

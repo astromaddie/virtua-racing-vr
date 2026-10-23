@@ -67,8 +67,11 @@ static int32_t divide(int64_t dividend, int32_t divisor)
    flags of objects they cull, and sort the track list), and so does this file. */
 static uint8_t scene[HLE_SCENE_SIZE];
 #ifdef VRDE_VR
-static int vr_collect, vr_car;
+static int vr_collect, vr_car, vr_car_record;
 static hle_vr_mesh_t vr_mesh;
+static int vr_decal_vertices;
+static int vr_road_cell(uint32_t model);
+static int vr_road_decal(int cell, unsigned polygon);
 #endif
 
 static uint16_t scene_word(int offset)
@@ -1049,6 +1052,9 @@ static void emit(geometry_t *g, uint16_t header, int vertex_count)
 	polygon->colour = colour;
 	polygon->vertex_count = vertex_count;
 	polygon->drawn_with = drawn_with;
+#ifdef VRDE_VR
+    polygon->vr_car=vr_car_record;
+#endif
 	for (int n = 0; n < vertex_count; n++) {
 		polygon->x[n] = slot(g, n)->sx;
 		polygon->y[n] = slot(g, n)->sy;
@@ -1191,15 +1197,20 @@ static void load_polygon(geometry_t *g, uint16_t header, uint32_t *model, int wi
 }
 
 #ifdef VRDE_VR
-static void vr_polygon(geometry_t *g, uint16_t header, int corners)
+static void vr_polygon(geometry_t *g, uint16_t header, int corners, int decal)
 {
     uint16_t colour = (header & 0x20) ? lit_colour(g, g->colour) : g->colour;
     for (int i = 1; i < corners - 1; i++) {
-        if (vr_mesh.count + 3 > HLE_VR_MAX_VERTICES) { vr_mesh.overflow = 1; return; }
+        if (vr_mesh.count + vr_decal_vertices + 3 > HLE_VR_MAX_VERTICES) { vr_mesh.overflow = 1; return; }
+        int first = vr_mesh.count;
+        if (decal & (1u<<(i-1))) {
+            vr_decal_vertices += 3;
+            first = HLE_VR_MAX_VERTICES - vr_decal_vertices;
+        } else vr_mesh.count += 3;
         int indices[3] = {0, i, i + 1};
         for (int j = 0; j < 3; j++) {
             const vertex_t *v = slot(g, indices[j]);
-            vr_mesh.vertices[vr_mesh.count++] = (hle_vr_vertex_t){
+            vr_mesh.vertices[first+j] = (hle_vr_vertex_t){
                 v->fx * 16, v->fy * 16, v->fz * 16, colour};
         }
     }
@@ -1209,6 +1220,10 @@ static void vr_polygon(geometry_t *g, uint16_t header, int corners)
 /* Overlay A, C0000000: draws one model with the current matrix */
 static void draw_model(geometry_t *g, uint32_t model)
 {
+#ifdef VRDE_VR
+    int road_cell = vr_collect && g->vertex_shift == 11 ? vr_road_cell(model) : -1;
+    unsigned polygon = 0;
+#endif
 	int vertex_count = sh2_word(model);
 	model += 4;   /* the second word is not used here */
 	transform_vertices(g, &model, vertex_count);
@@ -1224,7 +1239,7 @@ static void draw_model(geometry_t *g, uint32_t model)
 
 		int corners = (header & 1) ? 3 : 4;
 #ifdef VRDE_VR
-        if (vr_collect) { vr_polygon(g, header, corners); continue; }
+        if (vr_collect) { vr_polygon(g, header, corners, vr_road_decal(road_cell, polygon++)); continue; }
 #endif
 		int behind;
 		if (outcode(g, corners, &behind))
@@ -1247,10 +1262,20 @@ static void draw_records(geometry_t *g, int first, int count)
 		g->extra = record_extra[record_index(record)];
 		#ifdef VRDE_VR
         vr_car=record==PLAYER_CAR;
+        vr_car_record=record>=PLAYER_CAR && record<ROADSIDE;
+        /* The original car pivot leaves tyres roughly four world units above
+           the road. Move the complete visual assembly in world Y, including
+           cockpit children/effects, without changing camera or physical poses.
+           A constant pivot correction retains every jump/suspension delta. */
+        if (vr_collect && vr_car_record) {
+            matrix_t view = view_matrix();
+            for (int axis=0;axis<3;axis++) g->matrix.f[axis][3] -= view.f[axis][1] * (4.0/16);
+        }
 #endif
         draw_model(g, scene_long(record + MODEL));
 #ifdef VRDE_VR
         vr_car=0;
+        vr_car_record=0;
 #endif
 		g->extra = 0;
 	}
@@ -2091,7 +2116,11 @@ static vr_skids skid_marks;
 static struct {
     vr_skid_point p[3];
 } skid_roads[SKID_ROAD_CAPACITY];
-static struct { unsigned first, count; int loaded; } skid_cells[1024];
+static struct {
+    unsigned first, count;
+    int loaded;
+    uint8_t decals[2048/4]; /* two triangle bits per polygon */
+} skid_cells[1024];
 static unsigned skid_road_count;
 static uint32_t skid_grid;
 static int skid_cached_scene = -1;
@@ -2103,7 +2132,8 @@ static void skid_reset(void)
     skid_road_count=0; skid_grid=0; skid_cached_scene=-1;
 }
 
-/* Lazy per-cell decoding: only asphalt's alternating grey indices 12/13.
+/* Lazy per-cell decoding: asphalt's grey indices 12/13/14. Material 14 is
+   present under the near lane paint too, not a lighting variant of 12/13.
    Grass, water, kerbs, wall faces, car models and props cannot receive marks.
    Fail closed if a malformed/oversized model or our fixed cache limit is met. */
 static void skid_load_cell(int cell)
@@ -2122,12 +2152,13 @@ static void skid_load_cell(int cell)
         g.vertices[i].fy=sh2_signed_word(model+2)*.5;
         g.vertices[i].fz=sh2_signed_word(model+4)*.5;
     }
+    uint32_t polygons=model;
     for (int polygon=0;polygon<2048;polygon++) {
         uint16_t header=sh2_word(model); model+=2;
         if (((header>>8)&14)==12) break;
         load_polygon(&g,header,&model,1);
         unsigned material=g.colour>>8;
-        if (material!=12 && material!=13) continue;
+        if (material<12 || material>14) continue;
         int corners=(header&1)?3:4;
         for (int i=1;i<corners-1;i++) {
             if (skid_road_count==SKID_ROAD_CAPACITY) return;
@@ -2139,7 +2170,39 @@ static void skid_load_cell(int cell)
             skid_road_count++; skid_cells[cell].count++;
         }
     }
+    /* Painter-sort headers/material colours are not decal semantics. Classify
+       track detail with positive-area overlap on an asphalt triangle's plane.
+       Edge paint can straddle the road boundary. Adjacent grass merely sharing
+       an edge, raised kerbs, walls and all object meshes remain ordinary geometry.
+       Decode once per model/cell, never once per eye or display frame. */
+    model=polygons;
+    for (unsigned polygon=0;polygon<2048;polygon++) {
+        uint16_t header=sh2_word(model);model+=2;
+        if (((header>>8)&14)==12) break;
+        load_polygon(&g,header,&model,1);
+        unsigned material=g.colour>>8;
+        if (material>=12 && material<=14) continue;
+        int corners=(header&1)?3:4;
+        for(int j=1;j<corners-1;j++) {
+            int ix[3]={0,j,j+1};vr_skid_point p[3];
+            for(int k=0;k<3;k++)p[k]=(vr_skid_point){g.slots[ix[k]].fx,g.slots[ix[k]].fy,g.slots[ix[k]].fz};
+            for(unsigned i=skid_cells[cell].first;i<skid_cells[cell].first+skid_cells[cell].count;i++)
+                if(vr_road_overlay(p,skid_roads[i].p)) {
+                    skid_cells[cell].decals[polygon/4]|=1u<<(2*(polygon%4)+j-1);
+                    break;
+                }
+        }
+    }
 }
+
+static int vr_road_cell(uint32_t model)
+{
+    if(!skid_grid)return -1;
+    for(int cell=0;cell<1024;cell++)if(grid_cell(skid_grid,cell)==model){skid_load_cell(cell);return cell;}
+    return -1;
+}
+static int vr_road_decal(int cell, unsigned polygon)
+{ return cell>=0 && polygon<2048 ? (skid_cells[cell].decals[polygon/4]>>(2*(polygon%4)))&3 : 0; }
 
 static void skid_project(void *user, const vr_skid_point q[4], unsigned colour)
 {
@@ -2337,10 +2400,12 @@ const hle_vr_mesh_t *hle_vr_prepare(double fraction)
     /* Unlike the projected cache, this is regenerated only once at a frame boundary.
        No core/emulator call is made between this and the two eye draws. */
     interpolate(a, b, t);
-    vr_mesh.count = vr_mesh.overflow = 0;
+    vr_mesh.count = vr_mesh.overflow = vr_decal_vertices = 0;
     vr_mesh.scene = scenes_taken;
     vr_mesh.native_pitch = exact_word[(CAMERA + ANGLE_X)/2] * (2*M_PI/8192);
     vr_mesh.native_roll = exact_word[(CAMERA + ANGLE_Z)/2] * (2*M_PI/8192);
+    matrix_t view=view_matrix();
+    for(int axis=0;axis<3;axis++)vr_mesh.car_lowering[axis]=view.f[axis][1]*4;
     int saved_far = far_view;
     far_view = 1;
     vr_collect = 1;
@@ -2348,6 +2413,14 @@ const hle_vr_mesh_t *hle_vr_prepare(double fraction)
     int valid = build(b->command, &scratch);
     vr_collect = 0;
     far_view = saved_far;
+    vr_mesh.decal_first=vr_mesh.count;
+    /* Decals collected from the far end share the same bounded vertex buffer.
+       Restore authored order before the single contiguous overlay pass. */
+    int first=HLE_VR_MAX_VERTICES-vr_decal_vertices;
+    for(int a=first,b=HLE_VR_MAX_VERTICES-3;a<b;a+=3,b-=3)
+        for(int j=0;j<3;j++){hle_vr_vertex_t v=vr_mesh.vertices[a+j];vr_mesh.vertices[a+j]=vr_mesh.vertices[b+j];vr_mesh.vertices[b+j]=v;}
+    memmove(vr_mesh.vertices+vr_mesh.count,vr_mesh.vertices+first,vr_decal_vertices*sizeof(hle_vr_vertex_t));
+    vr_mesh.count+=vr_decal_vertices;
     if(valid)skid_draw(b->frame - tick*(1-t));
     return valid ? &vr_mesh : NULL;
 }

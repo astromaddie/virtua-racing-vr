@@ -24,6 +24,7 @@ PACKAGE_PARENT = BUILD / "package"
 ROM_SUFFIXES = {".32x", ".gp0", ".mds", ".srm"}
 OWNED_UNTRACKED_SOURCE = {
     "tools/skid_corner_inputs.txt", "src/vr_skids.c", "src/vr_skids.h", "tests/vr_skids_test.c", "tests/vr_skids_rom_test.c",
+    "tests/vr_surface_gl_test.c", "tests/vr_surface_rom_test.c",
     "src/vr_xr.c", "src/vr_xr.h", "src/vr_math.c", "src/vr_math.h",
     "src/vr_render.inc", "src/sfvr/sfvr_view.c", "src/sfvr/sfvr_view.h",
     "tools/build_manifest.py", "tests/test_vr_contracts.py", "tests/vr_math_test.c", "packaging/launch_vr.sh", "licenses/sfvr-MIT.txt",

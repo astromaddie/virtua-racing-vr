@@ -9,7 +9,7 @@
 #include <SDL_opengl.h>
 #endif
 
-enum { VR_EYE_MSAA_SAMPLES = 4 };
+enum { VR_EYE_MSAA_SAMPLES = 2 };
 
 typedef struct {
     GLuint framebuffer;

@@ -135,7 +135,7 @@ static void render(GLuint framebuffer, GLuint program, GLuint vao, GLuint buffer
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
     glDepthMask(GL_TRUE);
-    if (samples == 4)
+    if (samples > 1)
         glEnable(GL_MULTISAMPLE);
     else
         glDisable(GL_MULTISAMPLE);
@@ -232,10 +232,10 @@ int main(void)
     unsigned char resolved[HEIGHT][WIDTH][4];
     render(direct_fbo, program, vao, buffer, 1);
     read_pixels(direct_fbo, direct);
-    render(multisample.framebuffer, program, vao, buffer, 4);
+    render(multisample.framebuffer, program, vao, buffer, VR_EYE_MSAA_SAMPLES);
     assert(vr_msaa_target_resolve(&api, &multisample, resolved_fbo, WIDTH, HEIGHT));
     read_pixels(resolved_fbo, resolved);
-    expect_no_gl_error("direct draw, 4x draw, resolve and readback");
+    expect_no_gl_error("direct draw, multisample draw, resolve and readback");
 
     const unsigned char clear_colour[3] = {10, 15, 20};
     const unsigned char red_colour[3] = {194, 41, 20};
@@ -262,7 +262,7 @@ int main(void)
                 mixed_edges++;
         }
     if (!mixed_edges) {
-        fprintf(stderr, "4x resolve produced no mixed-coverage edge pixels\n");
+        fprintf(stderr, "MSAA resolve produced no mixed-coverage edge pixels\n");
         return 1;
     }
     printf("Interior palette and depth overlap match; mixed-coverage pixels=%u\n", mixed_edges);

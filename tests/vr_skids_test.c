@@ -21,6 +21,15 @@ static void run(vr_skids *s,int car,int first,int n,float dx,float dz)
 }
 int main(void)
 {
+    const vr_skid_point support_slope[3]={{0,0,0},{100,10,0},{0,0,100}};
+    vr_skid_point paint[3]={{-10,-1,20},{30,3,20},{30,3,30}};
+    assert(vr_road_overlay(paint,support_slope)); /* edge paint straddles asphalt */
+    for(int i=0;i<3;i++)paint[i].y+=.1f;
+    assert(!vr_road_overlay(paint,support_slope)); /* raised surface */
+    const vr_skid_point neighbour[3]={{0,0,0},{-100,-10,0},{0,0,100}};
+    assert(!vr_road_overlay(neighbour,support_slope)); /* shared edge is not overlap */
+    const vr_skid_point support_wall[3]={{0,0,0},{0,100,0},{0,0,100}};
+    assert(!vr_road_overlay(paint,support_wall));
     vr_skids_reset(&a);
     run(&a,0,3,30,0,12); assert(a.count==0); /* straight */
     run(&a,0,200,30,0,-12); assert(a.count==0); /* reverse */
@@ -97,7 +106,7 @@ int main(void)
     for(unsigned i=0;i<a.count;i++)for(int j=0;j<3;j++){
         vr_skid_point p=a.triangles[i].p[j];
         assert(p.x>=0 && p.z>=0 && p.x+p.z<=100);
-        assert(fabsf(p.y-(p.x*.1f+.08f))<.0001f);
+        assert(fabsf(p.y-p.x*.1f)<.0001f); /* exact receiving surface; raster bias handles depth */
     }
     total=a.total;
     vr_skid_point airborne[4];memcpy(airborne,q,sizeof q);

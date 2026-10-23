@@ -40,4 +40,7 @@ void vr_skids_step(vr_skids *s, int car, int frame, const vr_skid_sample *sample
    non-contact, vertical faces and degenerate geometry; no marks over the edge. */
 void vr_skids_project(vr_skids *s, const vr_skid_point quad[4],
                       const vr_skid_point road[3], unsigned colour);
+/* Positive-area overlap on the same road plane, including edge paint that
+   extends beyond the asphalt footprint. Adjacent ground sharing an edge fails. */
+int vr_road_overlay(const vr_skid_point triangle[3], const vr_skid_point road[3]);
 #endif

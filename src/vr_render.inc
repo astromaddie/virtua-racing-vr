@@ -277,7 +277,16 @@ static void vr_eye(int eye, XrPosef pose, XrFovf fov, int w, int h)
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LEQUAL);
         glBindVertexArray(vr_vao);
-        glDrawArrays(GL_TRIANGLES, 0, vr_scene->count);
+        glDrawArrays(GL_TRIANGLES, 0, vr_scene->decal_first);
+        /* Road detail retains ordinary geometry occlusion. Slope-scaled raster
+           bias resolves coplanar road depth; no depth writes means overlapping
+           paint/ribbons cannot fight one another. Restore state for both eyes. */
+        glEnable(GL_POLYGON_OFFSET_FILL);
+        glPolygonOffset(-1.f,-2.f);
+        glDepthMask(GL_FALSE);
+        glDrawArrays(GL_TRIANGLES, vr_scene->decal_first, vr_scene->count-vr_scene->decal_first);
+        glDepthMask(GL_TRUE);
+        glDisable(GL_POLYGON_OFFSET_FILL);
         glDisable(GL_DEPTH_TEST);
     }
 }
@@ -352,6 +361,9 @@ static int vr_host_diagnostic(int frames, int *script_frames, uint16_t *script_b
                 if (z < 32)
                     continue; /* clipped near-plane intersections */
                 float x = p->fx[k] * z / 112, y = p->fy[k] * z / 112, best = 1e30f;
+                if(p->vr_car) {
+                    x-=vr_scene->car_lowering[0];y-=vr_scene->car_lowering[1];z-=vr_scene->car_lowering[2];
+                }
                 for (int j = 0; j < vr_scene->count; j++) {
                     const hle_vr_vertex_t *v = &vr_scene->vertices[j];
                     float error = fmaxf(fabsf(v->x - x), fmaxf(fabsf(v->y - y), fabsf(v->z - z)));
