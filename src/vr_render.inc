@@ -391,6 +391,12 @@ static int vr_host_diagnostic(int frames, int *script_frames, uint16_t *script_b
            "hz=%.1f\n",
            vr_sim_frames, vr_display_frames, vr_scene ? vr_scene->scene : 0, vr_scene ? vr_scene->count : 0,
            vr_scene ? vr_scene->overflow : 0, vr_video_hash, vr_audio_hash, hz);
+    if (vr_scene) {
+        printf("[vr-diag] skids stored=%u total=%u drawn=%d cars=",vr_scene->skid_count,
+               vr_scene->skid_total,(vr_scene->count-vr_scene->skid_first)/3);
+        for(int car=0;car<16;car++)printf("%s%u",car?",":"",vr_scene->skid_cars[car]);
+        puts("");
+    }
     if (vr_scene)
         printf("[vr-diag] car_body_length=%.5f native_pitch=%.5f native_roll=%.5f\n", vr_scene->car_length,
                vr_scene->native_pitch, vr_scene->native_roll);

@@ -143,6 +143,8 @@ void hle_reset(void);
 typedef struct { float x, y, z; uint32_t colour; } hle_vr_vertex_t;
 typedef struct {
     int count, overflow, scene;
+    int skid_first;
+    unsigned skid_count, skid_total, skid_cars[16];
     float native_pitch, native_roll, car_length;
     hle_vr_vertex_t vertices[HLE_VR_MAX_VERTICES];
 } hle_vr_mesh_t;

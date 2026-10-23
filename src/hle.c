@@ -17,6 +17,9 @@
 
 #include "pico/pico_int.h"
 #include "hle.h"
+#ifdef VRDE_VR
+#include "vr_skids.h"
+#endif
 
 /* ---- The SH2's arithmetic ---- */
 
@@ -2079,9 +2082,184 @@ int hle_scene_count(void)
 	return scenes_taken;
 }
 
+#ifdef VRDE_VR
+/* Race-local, presentation-only geometry. Neither this cache nor its random
+   episode choices are part of the emulated machine. Road models contain absolute
+   coordinates: track vertex * 1/2, body x/z unchanged, body y and child xyz /16. */
+#define SKID_ROAD_CAPACITY 16384
+static vr_skids skid_marks;
+static struct {
+    vr_skid_point p[3];
+} skid_roads[SKID_ROAD_CAPACITY];
+static struct { unsigned first, count; int loaded; } skid_cells[1024];
+static unsigned skid_road_count;
+static uint32_t skid_grid;
+static int skid_cached_scene = -1;
+
+static void skid_reset(void)
+{
+    vr_skids_reset(&skid_marks);
+    memset(skid_cells, 0, sizeof(skid_cells));
+    skid_road_count=0; skid_grid=0; skid_cached_scene=-1;
+}
+
+/* Lazy per-cell decoding: only asphalt's alternating grey indices 12/13.
+   Grass, water, kerbs, wall faces, car models and props cannot receive marks.
+   Fail closed if a malformed/oversized model or our fixed cache limit is met. */
+static void skid_load_cell(int cell)
+{
+    if (cell<0 || cell>=1024 || skid_cells[cell].loaded) return;
+    skid_cells[cell].loaded=1;
+    skid_cells[cell].first=skid_road_count;
+    uint32_t model=grid_cell(skid_grid,cell);
+    if (model==GRID_EMPTY) return;
+    int vertices=sh2_word(model); model+=4;
+    if (vertices<1 || vertices>MAX_VERTICES) return;
+    static geometry_t g;
+    memset(&g,0,sizeof(g));
+    for (int i=0;i<vertices;i++,model+=6) {
+        g.vertices[i].fx=sh2_signed_word(model)*.5;
+        g.vertices[i].fy=sh2_signed_word(model+2)*.5;
+        g.vertices[i].fz=sh2_signed_word(model+4)*.5;
+    }
+    for (int polygon=0;polygon<2048;polygon++) {
+        uint16_t header=sh2_word(model); model+=2;
+        if (((header>>8)&14)==12) break;
+        load_polygon(&g,header,&model,1);
+        unsigned material=g.colour>>8;
+        if (material!=12 && material!=13) continue;
+        int corners=(header&1)?3:4;
+        for (int i=1;i<corners-1;i++) {
+            if (skid_road_count==SKID_ROAD_CAPACITY) return;
+            int ix[3]={0,i,i+1};
+            for(int j=0;j<3;j++) {
+                vertex_t *v=&g.slots[ix[j]];
+                skid_roads[skid_road_count].p[j]=(vr_skid_point){v->fx,v->fy,v->fz};
+            }
+            skid_road_count++; skid_cells[cell].count++;
+        }
+    }
+}
+
+static void skid_project(void *user, const vr_skid_point q[4], unsigned colour)
+{
+    (void)user;
+    int column=16+(int)floorf(q[2].x/1024), row=15-(int)floorf(q[2].z/1024);
+    uint32_t seen[9]; int seen_count=0;
+    for(int y=row-1;y<=row+1;y++) for(int x=column-1;x<=column+1;x++) {
+        if(x<0||x>=32||y<0||y>=32)continue;
+        int cell=y*32+x, duplicate=0;
+        uint32_t model=grid_cell(skid_grid,cell);
+        for(int i=0;i<seen_count;i++)if(seen[i]==model)duplicate=1;
+        if(duplicate)continue;
+        seen[seen_count++]=model;
+        skid_load_cell(cell);
+        unsigned first=skid_cells[cell].first, end=first+skid_cells[cell].count;
+        for(unsigned i=first;i<end;i++)vr_skids_project(&skid_marks,q,skid_roads[i].p,colour);
+    }
+}
+
+static vr_skid_sample skid_sample(int body, int rear)
+{
+    vr_skid_sample sample={0};
+    if (body!=PLAYER_CAR && !field(body,FLAG)) return sample;
+    /* The common 68000 pose writer (882996, also called by cockpit helper 883130)
+       refreshes world xyz/yaw in every view. Never use cockpit's render matrix. */
+    sample.centre=(vr_skid_point){field(body,POS_X),field(body,POS_Y)/16.f,field(body,POS_Z)};
+    sample.yaw=field(body,ANGLE_Y)*(2*M_PI/8192);
+    /* 8836DE writes the 15 opponents in fixed physics-record order: 9100+i*100
+       to scene 218+i*3c, irrespective of LOD. Slots cannot change car identity. */
+    int car_index=body==PLAYER_CAR?0:1+(body-OPPONENTS)/OPPONENT_SIZE;
+    sample.sound_slip=((const int16_t *)PicoMem.ram)[(0x9000+car_index*0x100+0x94)/2];
+    matrix_t car=identity();
+    translate_to_world_position(&car,body);
+    rotate_y(&car,value(body,ANGLE_Y));
+    rotate_x(&car,value(body,ANGLE_X));
+    rotate_z(&car,value(body,ANGLE_Z));
+    translate_to_local_position(&car,rear);
+    uint32_t model=scene_long(rear+MODEL);
+    int n=sh2_word(model);
+    if(n<8 || n>128)return sample;
+    /* Rear axle models contain the two tyres. Their outer x extents and smallest
+       positive x identify tyre width, even when the axle has vertices on x=0. */
+    float outer[2]={0,0},inner[2]={1e9,1e9},bottom=1e9,zmin=1e9,zmax=-1e9;
+    for(int i=0;i<n;i++) {
+        float x=sh2_signed_word(model+4+6*i)/64.f;
+        float y=sh2_signed_word(model+6+6*i)/64.f;
+        float z=sh2_signed_word(model+8+6*i)/64.f;
+        int side=x>0;
+        if(fabsf(x)>.01f){outer[side]=fmaxf(outer[side],fabsf(x));inner[side]=fminf(inner[side],fabsf(x));}
+        bottom=fminf(bottom,y);zmin=fminf(zmin,z);zmax=fmaxf(zmax,z);
+    }
+    for(int side=0;side<2;side++) {
+        sample.width[side]=outer[side]-inner[side];
+        if(sample.width[side]<1 || sample.width[side]>12)return sample;
+        double local[3]={(side?1:-1)*(outer[side]+inner[side])/32.,bottom/16.,(zmin+zmax)/32.};
+        vertex_t v;transform_exact_vector(&car,local,&v);
+        sample.tyre[side]=(vr_skid_point){v.fx*16,v.fy*16,v.fz*16};
+    }
+    sample.valid=1;
+    return sample;
+}
+
+static void skid_snapshot(int command)
+{
+    if(command!=HLE_RACE_COMMAND){skid_reset();return;}
+    /* HUD list types are authored in the same complete DREQ scene. Results use
+       7/8/10, matching the front end's established AFTER_RACE_TYPES gate. */
+    for(int entry=0;entry<32;entry++) {
+        unsigned type=scene[0x800+entry*16];
+        if(type==7||type==8||type==10){skid_reset();return;}
+    }
+    uint32_t grid=field(CAMERA,EXTRA)>0?grid_of(scene_long(TRACK_LIST)):0;
+    if(!grid){vr_skids_cut(&skid_marks);return;}
+    if(grid!=skid_grid){skid_reset();skid_grid=grid;}
+    vr_skid_sample player=skid_sample(PLAYER_CAR,PLAYER_PARTS+2*RECORD_SIZE);
+    vr_skids_step(&skid_marks,0,frame_count,&player,skid_project,NULL);
+    for(int i=0;i<15;i++) {
+        int body=OPPONENTS+i*OPPONENT_SIZE;
+        vr_skid_sample opponent=skid_sample(body,body+2*RECORD_SIZE);
+        vr_skids_step(&skid_marks,i+1,frame_count,&opponent,skid_project,NULL);
+    }
+}
+
+static void skid_draw(double displayed_frame)
+{
+    matrix_t view=view_matrix();
+    vr_mesh.skid_first=vr_mesh.count;
+    vr_mesh.skid_count=skid_marks.count; vr_mesh.skid_total=skid_marks.total;
+    memcpy(vr_mesh.skid_cars,skid_marks.emitted,sizeof(vr_mesh.skid_cars));
+    for(unsigned i=0;i<skid_marks.count;i++) {
+        const vr_skid_triangle *t=vr_skids_triangle(&skid_marks,i);
+        if(t->frame>displayed_frame)continue;
+        double centre[3]={(t->p[0].x+t->p[1].x+t->p[2].x)/48.,
+                         (t->p[0].y+t->p[1].y+t->p[2].y)/48.,
+                         (t->p[0].z+t->p[1].z+t->p[2].z)/48.};
+        int column=16+(int)floor(centre[0]/CELL_SIZE), row=15-(int)floor(centre[2]/CELL_SIZE);
+        if(column<0||column>=32||row<0||row>=32)continue;
+        int cell=row*32+column;
+        if(!cell_reached(cell)&&!sent_by_68000(grid_cell(skid_grid,cell)))continue;
+        vertex_t c;transform_exact_vector(&view,centre,&c);
+        /* Match track reach, including behind/side views; independent of head yaw. */
+        if(c.fx*c.fx+c.fy*c.fy+c.fz*c.fz>512.*512.)continue;
+        if(vr_mesh.count+3>HLE_VR_MAX_VERTICES){vr_mesh.overflow=1;break;}
+        for(int j=0;j<3;j++) {
+            double p[3]={t->p[j].x/16.,t->p[j].y/16.,t->p[j].z/16.};
+            vertex_t v;transform_exact_vector(&view,p,&v);
+            vr_mesh.vertices[vr_mesh.count++]=(hle_vr_vertex_t){v.fx*16,v.fy*16,v.fz*16,t->colour};
+        }
+    }
+}
+#endif
+
 static void take_snapshot(const uint8_t *new_scene, int command)
 {
 	scenes_taken++;
+#ifdef VRDE_VR
+    memcpy(scene,new_scene,HLE_SCENE_SIZE);
+    exact_from_scene();
+    skid_snapshot(command);
+#endif
 	snapshots[0] = snapshots[1];
 	memcpy(snapshots[1].scene, new_scene, HLE_SCENE_SIZE);
 	snapshots[1].command = command;
@@ -2153,9 +2331,9 @@ const hle_vr_mesh_t *hle_vr_prepare(double fraction)
     double t = 1;
     if (snapshot_count == 2 && a->command == b->command && tick >= 1 && tick <= LONGEST_TICK)
         t = fmax(0, fmin(1, (frame_count - 1 + fraction - b->frame) / tick));
-    static int cached_scene=-1; static double cached_t=-1;
-    if(cached_scene==scenes_taken&&cached_t==t)return &vr_mesh;
-    cached_scene=scenes_taken;cached_t=t;
+    static double cached_t=-1;
+    if(skid_cached_scene==scenes_taken&&cached_t==t)return &vr_mesh;
+    skid_cached_scene=scenes_taken;cached_t=t;
     /* Unlike the projected cache, this is regenerated only once at a frame boundary.
        No core/emulator call is made between this and the two eye draws. */
     interpolate(a, b, t);
@@ -2170,6 +2348,7 @@ const hle_vr_mesh_t *hle_vr_prepare(double fraction)
     int valid = build(b->command, &scratch);
     vr_collect = 0;
     far_view = saved_far;
+    if(valid)skid_draw(b->frame - tick*(1-t));
     return valid ? &vr_mesh : NULL;
 }
 #endif
@@ -2203,6 +2382,9 @@ void hle_on_comm_write(int writer, unsigned int offset, unsigned int value, int 
 		return;
 	if (writer == WRITER_68K && (offset & ~1u) == 0x20) {
 		command = low_byte;
+#ifdef VRDE_VR
+        if(command!=HLE_RACE_COMMAND)skid_reset();
+#endif
 		if (command != HLE_RACE_COMMAND && command != HLE_DEMO_COMMAND)
 			latest = -1;
 	}
@@ -2238,6 +2420,9 @@ const hle_frame_t *hle_on_frame_end(void)
 
 void hle_reset(void)
 {
+#ifdef VRDE_VR
+    skid_reset();
+#endif
 	latest = finished = shown = -1;
 	snapshot_count = 0;
 	smooth_built.valid = 0;

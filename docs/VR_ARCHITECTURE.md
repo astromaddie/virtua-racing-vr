@@ -84,6 +84,61 @@ restores the prior state. Where available, the resolve invalidates its temporary
 colour and depth attachments immediately afterward to avoid unnecessary sample
 storage on tiled GPUs. HUD/menu panels retain their separate single-sample path.
 
+## Persistent tyre marks
+
+VR adds race-local rear tyre ribbons for the player and all 15 opponents. The
+raw DREQ snapshot is the only update point; interpolation and either eye only
+read the resulting world geometry. The 68000 opponent writer at `8836DE` maps
+physics records `9100+i*100` to scene bodies `218+i*3c` in fixed order, so LOD
+changes cannot exchange car identities. The cockpit helper `883130` calls the
+same world-pose writer `882996`; tyre placement never uses the camera-relative
+cockpit model matrix.
+
+Eligibility follows the original sustained slip-sound controller (`8885C4`,
+`888610`): absolute car-record `+94` starts above 32 and stops at 16 or below.
+Those routines issue sound commands BD/C8. A midpoint-heading lateral-motion
+check also catches genuine sliding/spins: 18% entry, 10% exit, with two ticks
+of confirmation and at least 120 world units/s. Sound-qualified cornering does
+not require that lateral angle. Both paths require real travel and reject
+snapshot gaps, teleports and implausible pose jumps. A local deterministic hash
+selects three quarters of sliding episodes, independently of the emulator's
+RNG, and varies their dark grey intensity.
+
+Rear wheel meshes supply tyre width and centres. The three car kinds have
+rear tyre widths of 5.859375, 6.5625 and 5.609375 world units, confirmed from
+their ROM asset packs. Body X/Z words are final world units; Y and wheel
+placements divide by 16; object mesh vertices divide by 64. A lazy bounded
+cache decodes only the current course grid's asphalt polygons (alternating
+palette indices 12/13, verified present in all five course grids). Each ribbon
+is clipped to those triangles and follows
+their actual height and slope. The contact tolerance accommodates the original
+ride height; airborne tyres, grass, water, kerbs, vertical faces, props and cars
+are excluded. Marks use the existing palette and depth-tested mesh draw, raised
+0.08 world units from the receiving triangle. New segments appear only once
+the interpolated presentation has reached their source tick. Both eyes see the
+same immutable triangles.
+
+The fixed ring holds 8,192 triangles, replacing the oldest only when full; the
+road cache holds at most 16,384 triangles and fails closed when full. Combined
+persistent storage is under 1 MiB. Drawing is limited to the existing reached
+track cells and an 8,192-unit camera radius. Marks survive laps, pauses, focus
+loss and view changes; a discontinuity only breaks connecting trails. Leaving
+race command 2, results HUD types 7/8/10, a changed course grid or `hle_reset()`
+(including the existing state-load route) clears them. There is no setting,
+physics/RNG write, extra draw call, shader change or change to fixed 4× MSAA.
+The ordinary flat build excludes the entire feature.
+
+`make vrskidtest` covers sound-threshold hysteresis, straight/reverse motion,
+ordinary tangent-aligned corners, geometric sliding, all car slots, episode
+determinism, repeated ticks, gaps/teleports/reset, slope/edge/contact rejection
+and ring bounds. The optional `build/vr_skids_rom_test ROM` runs the real
+`tools/race_inputs.txt` through production snapshot hooks, checking player/AI
+emission, persistence, cockpit views, immutable preparation and results/reset.
+Its `pause` argument tests Start pause/resume; `corner` uses the chronological
+`tools/skid_corner_inputs.txt` script, releasing the first turn at frame 2026
+and adding a right turn at 2100–2126. Host stereo diagnostics retain
+the `[vr-diag] skids` counters alongside the existing seven-field state hashes.
+
 ## Frame protocol and controls
 
 The target is **2160 × 2160 per eye at 120 Hz**. The application defaults to
