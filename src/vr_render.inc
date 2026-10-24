@@ -373,13 +373,18 @@ static int vr_host_diagnostic(int frames, int *script_frames, uint16_t *script_b
     if (identity && vr_scene)
         for (int i = 0; i < identity->hud_first; i++) {
             const hle_polygon_t *p = &identity->polygons[i];
-            for (int k = 0; k < p->vertex_count; k++) {
-                float z = p->depth[k];
-                if (z < 32)
+            hle_vr_vertex_t repaired[768];
+            int replacements=p->vr_model?hle_vr_repaired_polygon(p->vr_model,p->vr_polygon,repaired,768):0;
+            if(replacements<0){identity_missing++;continue;}
+            for (int k = 0; k < (replacements?replacements:p->vertex_count); k++) {
+                float z = replacements?repaired[k].z:p->depth[k];
+                if (!replacements && z < 32)
                     continue; /* clipped near-plane intersections */
-                float x = p->fx[k] * z / 112, y = p->fy[k] * z / 112, best = 1e30f;
-                if(p->vr_car) {
-                    x-=vr_scene->car_lowering[0];y-=vr_scene->car_lowering[1];z-=vr_scene->car_lowering[2];
+                float x = replacements?repaired[k].x:p->fx[k]*z/112;
+                float y = replacements?repaired[k].y:p->fy[k]*z/112,best=1e30f;
+                if(p->vr_car && !replacements) {
+                    const float *lowering=vr_scene->car_lowering[p->vr_car-1];
+                    x-=lowering[0];y-=lowering[1];z-=lowering[2];
                 }
                 for (int j = 0; j < vr_scene->count; j++) {
                     const hle_vr_vertex_t *v = &vr_scene->vertices[j];

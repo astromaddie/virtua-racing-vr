@@ -30,6 +30,63 @@ int main(void)
     assert(!vr_road_overlay(neighbour,support_slope)); /* shared edge is not overlap */
     const vr_skid_point support_wall[3]={{0,0,0},{0,100,0},{0,0,100}};
     assert(!vr_road_overlay(paint,support_wall));
+    /* Real receiving planes, including a bank and an overhead deck. */
+    vr_skid_point tyre[4]={{10,1,10},{20,1,10},{10,7,10},{20,7,10}};
+    vr_skid_point centre={15,4,10};
+    assert(fabsf(vr_road_clearance(tyre,4,centre,support_slope)+1)<1e-6);
+    vr_skid_point deck[3];memcpy(deck,support_slope,sizeof deck);
+    for(int i=0;i<3;i++)deck[i].y+=5;
+    assert(isinf(vr_road_clearance(tyre,4,centre,deck)));
+    for(int i=0;i<4;i++)tyre[i].y+=100;
+    centre.y+=100;
+    assert(fabsf(vr_road_clearance(tyre,4,centre,support_slope)-99)<1e-6);
+    assert(isinf(vr_road_clearance(tyre,4,centre,support_wall)));
+    const vr_skid_point steep[3]={{0,0,0},{100,200,0},{0,0,100}};
+    const vr_skid_point steep_tyre[2]={{9,17,10},{11,21,10}};
+    assert(fabsf(vr_road_clearance(steep_tyre,2,(vr_skid_point){10,24,10},steep)+1)<1e-6);
+    const vr_skid_point slanted_wall[3]={{0,0,0},{2,200,0},{0,0,20}};
+    const vr_skid_point wall_tyre[2]={{1,0,2},{1,8,2}};
+    assert(isinf(vr_road_clearance(wall_tyre,2,(vr_skid_point){0,4,2},slanted_wall)));
+    const vr_skid_point bank[3]={{-100,-50,-100},{100,50,-100},{0,0,100}};
+    const vr_skid_point left[1]={{-10,-7,0}},right[1]={{10,3,0}};
+    assert(vr_road_clearance(left,1,(vr_skid_point){-10,-1,0},bank)==-2);
+    assert(vr_road_clearance(right,1,(vr_skid_point){10,9,0},bank)==-2);
+    /* Footprint partition across a real slope discontinuity, including the
+       authored part outside the receiver. Each projected piece lies on its own
+       plane; the projection never changes the XZ outline. */
+    vr_surface_polygon paint_piece={{{-2,-.5,1},{2,-.5,1},{0,-.5,4}},3},pieces[4];
+    const vr_skid_point facet[3]={{0,0,0},{10,1,0},{0,0,10}};
+    int pieces_count=vr_surface_project(&paint_piece,facet,pieces);assert(pieces_count>=2);
+    double area_sum=0;
+    for(int i=0;i<pieces_count;i++) {
+        for(int j=0;j<pieces[i].count;j++) {
+            vr_skid_point p=pieces[i].p[j];
+            assert(p.x>=-2&&p.x<=2&&p.z>=1&&p.z<=4);
+            assert(fabsf(p.y-(i?-.5f:p.x*.1f))<1e-5);
+        }
+        for(int j=1;j<pieces[i].count-1;j++) {
+            vr_skid_point a=pieces[i].p[0],b=pieces[i].p[j],c=pieces[i].p[j+1];
+            area_sum+=fabs((b.x-a.x)*(c.z-a.z)-(b.z-a.z)*(c.x-a.x));
+        }
+    }
+    assert(fabs(area_sum-12)<1e-6);
+    for(int i=0;i<3;i++)paint_piece.p[i].y+=10;
+    assert(!vr_surface_project(&paint_piece,facet,pieces));
+    assert(!vr_surface_project(&paint_piece,support_wall,pieces));
+    const vr_skid_point door[4]={{0,0,10},{64,0,10},{64,32,10},{0,32,10}};
+    vr_skid_point detail[4]={{8,4,10},{40,4,10},{40,15.5,10},{8,15.5,10}};
+    assert(vr_surface_detail(detail,4,door,4));
+    assert(!vr_surface_detail(door,4,detail,4));
+    assert(!vr_surface_detail(door,4,door,4));
+    detail[0].z+=.5f;assert(vr_surface_detail(detail,4,door,4));
+    vr_skid_point on=vr_surface_on_plane(detail[0],door);assert(fabsf(on.z-10)<1e-6&&on.x==detail[0].x&&on.y==detail[0].y);
+    detail[0].z+=.1f;assert(!vr_surface_detail(detail,4,door,4));detail[0].z-=.6f;
+    for(int i=0;i<4;i++)detail[i].z+=.1f;
+    assert(!vr_surface_detail(detail,4,door,4)); /* A distinct raised panel. */
+    for(int i=0;i<4;i++)detail[i].z-=.1f;
+    detail[0].x=-1;assert(!vr_surface_detail(detail,4,door,4));
+    const vr_skid_point adjacent[3]={{64,0,10},{80,0,10},{64,32,10}};
+    assert(!vr_surface_detail(adjacent,3,door,4));
     vr_skids_reset(&a);
     run(&a,0,3,30,0,12); assert(a.count==0); /* straight */
     run(&a,0,200,30,0,-12); assert(a.count==0); /* reverse */
@@ -116,6 +173,21 @@ int main(void)
     vr_skids_project(&a,q,wall,0x600);assert(a.total==total);
     const vr_skid_point outside[4]={{-20,0,0},{-10,0,0},{-10,0,10},{-20,0,10}};
     vr_skids_project(&a,outside,slope,0x600);assert(a.total==total);
+    /* One new ribbon crosses a road crease: both facets retain their own
+       receiving plane and the union neither loses nor doubles its footprint. */
+    vr_skids_reset(&a);
+    const vr_skid_point crease[2][3]={{{0,0,0},{10,0,0},{0,0,10}},{{10,0,0},{10,2,10},{0,0,10}}};
+    const vr_skid_point ribbon[4]={{3,0,3},{7,0,3},{7,.8,7},{3,0,7}};
+    for(int i=0;i<2;i++)vr_skids_project(&a,ribbon,crease[i],0x600);
+    double ribbon_area=0;int low=0,high=0;
+    for(unsigned i=0;i<a.count;i++) {
+        const vr_skid_point *p=a.triangles[i].p;
+        float centre=p[0].x+p[0].z+p[1].x+p[1].z+p[2].x+p[2].z;
+        int upper=centre>30;low+=!upper;high+=upper;
+        for(int v=0;v<3;v++)assert(fabsf(p[v].y-(upper?.2f*(p[v].x+p[v].z-10):0))<.00001);
+        ribbon_area+=fabs((p[1].x-p[0].x)*(p[2].z-p[0].z)-(p[2].x-p[0].x)*(p[1].z-p[0].z))*.5;
+    }
+    assert(low&&high&&fabs(ribbon_area-16)<.0001);
     for(int i=0;i<VR_SKID_CAPACITY;i++) {
         a.frame=i;
         vr_skids_project(&a,q,slope,0x600);

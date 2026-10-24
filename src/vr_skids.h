@@ -43,4 +43,20 @@ void vr_skids_project(vr_skids *s, const vr_skid_point quad[4],
 /* Positive-area overlap on the same road plane, including edge paint that
    extends beyond the asphalt footprint. Adjacent ground sharing an edge fails. */
 int vr_road_overlay(const vr_skid_point triangle[3], const vr_skid_point road[3]);
+/* Minimum vertical tyre clearance over this road triangle. A road above the
+   wheel centre is an overhead deck, not a support. INFINITY means no overlap. */
+float vr_road_clearance(const vr_skid_point *wheel, int count, vr_skid_point centre,
+                        const vr_skid_point road[3]);
+/* Strictly smaller, coplanar detail contained by a convex receiving polygon;
+   works on vertical faces too. Equal faces and edge-only neighbours fail. */
+int vr_surface_detail(const vr_skid_point *detail, int count,
+                      const vr_skid_point *base, int base_count);
+#define VR_SURFACE_POLYGON_VERTICES 12
+typedef struct { vr_skid_point p[VR_SURFACE_POLYGON_VERTICES]; int count; } vr_surface_polygon;
+/* Partition a detail footprint against one actual road facet. Output zero is
+   projected onto that facet; remaining pieces retain their authored positions.
+   Returns zero without modifying output if overlap/support is not established. */
+int vr_surface_project(const vr_surface_polygon *detail,const vr_skid_point road[3],
+                       vr_surface_polygon output[4]);
+vr_skid_point vr_surface_on_plane(vr_skid_point p,const vr_skid_point plane[3]);
 #endif

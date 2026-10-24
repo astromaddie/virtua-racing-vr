@@ -37,6 +37,131 @@ int vr_road_overlay(const vr_skid_point triangle[3], const vr_skid_point road[3]
     for(int i=1;i<n-1;i++)if(fabsf(cross(a[0],a[i],a[i+1]))>.01f)return 1;
     return 0;
 }
+/* Double precision is useful here: track coordinates span tens of thousands
+   of units, while the authored coplanar detail must not acquire a height. */
+float vr_road_clearance(const vr_skid_point *wheel, int count, vr_skid_point centre,
+                        const vr_skid_point road[3])
+{
+    double ux=road[1].x-road[0].x,uy=road[1].y-road[0].y,uz=road[1].z-road[0].z;
+    double vx=road[2].x-road[0].x,vy=road[2].y-road[0].y,vz=road[2].z-road[0].z;
+    double nx=uy*vz-uz*vy,ny=uz*vx-ux*vz,nz=ux*vy-uy*vx;
+    if(fabs(ny)<.01)return INFINITY;
+    double centre_y=road[0].y-(nx*(centre.x-road[0].x)+nz*(centre.z-road[0].z))/ny;
+    if(centre_y>centre.y)return INFINITY;
+    float gap=INFINITY;
+    float xmin=fminf(road[0].x,fminf(road[1].x,road[2].x));
+    float xmax=fmaxf(road[0].x,fmaxf(road[1].x,road[2].x));
+    float zmin=fminf(road[0].z,fminf(road[1].z,road[2].z));
+    float zmax=fmaxf(road[0].z,fmaxf(road[1].z,road[2].z));
+    for(int i=0;i<count;i++) {
+        vr_skid_point p=wheel[i];
+        if(p.x<xmin||p.x>xmax||p.z<zmin||p.z>zmax)continue;
+        double a=((road[1].x-p.x)*(double)(road[2].z-p.z)-(road[2].x-p.x)*(double)(road[1].z-p.z))/-ny;
+        double b=((road[2].x-p.x)*(double)(road[0].z-p.z)-(road[0].x-p.x)*(double)(road[2].z-p.z))/-ny;
+        if(a< -1e-7||b< -1e-7||a+b>1+1e-7)continue;
+        double y=road[0].y-(nx*(p.x-road[0].x)+nz*(p.z-road[0].z))/ny;
+        /* A slanted wall can cross the extended wheel footprint far above its
+           hub. Only the lower half of this individual tyre can receive support. */
+        if(y<=centre.y)gap=fminf(gap,p.y-y);
+    }
+    return gap;
+}
+
+int vr_surface_detail(const vr_skid_point *detail,int count,
+                      const vr_skid_point *base,int base_count)
+{
+    if(count<3||count>4||base_count<3||base_count>4)return 0;
+    double u[3]={base[1].x-base[0].x,base[1].y-base[0].y,base[1].z-base[0].z};
+    double v[3]={base[2].x-base[0].x,base[2].y-base[0].y,base[2].z-base[0].z};
+    double n[3]={u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]};
+    double length=sqrt(n[0]*n[0]+n[1]*n[1]+n[2]*n[2]);
+    if(length<.01)return 0;
+    int axis=fabs(n[0])>fabs(n[1])?0:1;if(fabs(n[2])>fabs(n[axis]))axis=2;
+    int x=(axis+1)%3,y=(axis+2)%3;
+    double b[4][3],d[4][3],area=0,detail_area=0;
+    for(int i=0;i<base_count;i++) {
+        b[i][0]=base[i].x;b[i][1]=base[i].y;b[i][2]=base[i].z;
+        double distance=n[0]*(base[i].x-base[0].x)+n[1]*(base[i].y-base[0].y)+n[2]*(base[i].z-base[0].z);
+        if(fabs(distance)>.001*length)return 0;
+    }
+    int anchored=0;
+    for(int i=0;i<count;i++) {
+        d[i][0]=detail[i].x;d[i][1]=detail[i].y;d[i][2]=detail[i].z;
+        double distance=n[0]*(detail[i].x-base[0].x)+n[1]*(detail[i].y-base[0].y)+n[2]*(detail[i].z-base[0].z);
+        if(fabs(distance)>.501*length)return 0;
+        anchored+=fabs(distance)<=.001*length;
+    }
+    if(anchored<2)return 0;
+    for(int i=0;i<base_count;i++) {int j=(i+1)%base_count;area+=b[i][x]*b[j][y]-b[j][x]*b[i][y];}
+    for(int i=0;i<count;i++) {int j=(i+1)%count;detail_area+=d[i][x]*d[j][y]-d[j][x]*d[i][y];}
+    if(fabs(detail_area)<.01||fabs(detail_area)>=fabs(area)-.01)return 0;
+    for(int i=0;i<count;i++)for(int j=0;j<base_count;j++) {
+        int k=(j+1)%base_count;
+        double side=(b[k][x]-b[j][x])*(d[i][y]-b[j][y])-(b[k][y]-b[j][y])*(d[i][x]-b[j][x]);
+        if(side*area< -1e-7)return 0;
+    }
+    return 1;
+}
+
+vr_skid_point vr_surface_on_plane(vr_skid_point p,const vr_skid_point plane[3])
+{
+    double ux=plane[1].x-plane[0].x,uy=plane[1].y-plane[0].y,uz=plane[1].z-plane[0].z;
+    double vx=plane[2].x-plane[0].x,vy=plane[2].y-plane[0].y,vz=plane[2].z-plane[0].z;
+    double nx=uy*vz-uz*vy,ny=uz*vx-ux*vz,nz=ux*vy-uy*vx;
+    double norm=nx*nx+ny*ny+nz*nz;
+    if(norm<1e-10)return p;
+    double distance=(nx*(p.x-plane[0].x)+ny*(p.y-plane[0].y)+nz*(p.z-plane[0].z))/norm;
+    return (vr_skid_point){p.x-nx*distance,p.y-ny*distance,p.z-nz*distance};
+}
+static int surface_clip(const vr_surface_polygon *in,vr_surface_polygon *out,
+                         vr_skid_point a,vr_skid_point b,double orientation,int inside)
+{
+    out->count=0;
+    for(int i=0;i<in->count;i++) {
+        vr_skid_point p=in->p[i],q=in->p[(i+1)%in->count];
+        double dp=((b.x-a.x)*(double)(p.z-a.z)-(b.z-a.z)*(double)(p.x-a.x))*orientation;
+        double dq=((b.x-a.x)*(double)(q.z-a.z)-(b.z-a.z)*(double)(q.x-a.x))*orientation;
+        int keep=inside?dp>=0:dp<0;
+        if(keep) {if(out->count==VR_SURFACE_POLYGON_VERTICES)return 0;out->p[out->count++]=p;}
+        if((dp<0)!=(dq<0)) {
+            if(out->count==VR_SURFACE_POLYGON_VERTICES)return 0;
+            double t=dp/(dp-dq);
+            out->p[out->count++]=(vr_skid_point){p.x+(q.x-p.x)*t,p.y+(q.y-p.y)*t,p.z+(q.z-p.z)*t};
+        }
+    }
+    return 1;
+}
+int vr_surface_project(const vr_surface_polygon *detail,const vr_skid_point road[3],
+                       vr_surface_polygon output[4])
+{
+    double ux=road[1].x-road[0].x,uy=road[1].y-road[0].y,uz=road[1].z-road[0].z;
+    double vx=road[2].x-road[0].x,vy=road[2].y-road[0].y,vz=road[2].z-road[0].z;
+    double nx=uy*vz-uz*vy,ny=uz*vx-ux*vz,nz=ux*vy-uy*vx;
+    if(detail->count<3||detail->count>VR_SURFACE_POLYGON_VERTICES||fabs(ny)<.01||
+       ny*ny<.64*(nx*nx+ny*ny+nz*nz))return 0;
+    vr_surface_polygon remaining=*detail,parts[4];int count=1;
+    for(int edge=0;edge<3;edge++) {
+        vr_surface_polygon inside,outside;
+        if(!surface_clip(&remaining,&inside,road[edge],road[(edge+1)%3],-ny,1)||
+           !surface_clip(&remaining,&outside,road[edge],road[(edge+1)%3],-ny,0))return 0;
+        if(outside.count>=3)parts[count++]=outside;
+        remaining=inside;
+        if(remaining.count<3)return 0;
+    }
+    double area=0;for(int i=1;i<remaining.count-1;i++)area+=fabs(cross(remaining.p[0],remaining.p[i],remaining.p[i+1]));
+    if(area<.01)return 0;
+    for(int i=0;i<remaining.count;i++) {
+        vr_skid_point *p=&remaining.p[i];
+        double y=road[0].y-(nx*(p->x-road[0].x)+nz*(p->z-road[0].z))/ny;
+        /* Authored track points are quantized in half-world-unit steps. Two
+           steps cover the near-road paint/mark intersections in the assets;
+           a raised kerb, wall or other distinct surface is not flattened. */
+        if(fabs(p->y-y)>1.001)return 0;
+        p->y=y;
+    }
+    parts[0]=remaining;memcpy(output,parts,count*sizeof(*output));return count;
+}
+
 static unsigned episode_hash(unsigned x)
 {
     x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu;

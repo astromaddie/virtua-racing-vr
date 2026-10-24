@@ -40,7 +40,8 @@ typedef struct {
 	   place of its own and for the 3D) */
 	int hud_anchor;
 #ifdef VRDE_VR
-    int vr_car; /* Diagnostic provenance: receives the VR-only visual pivot correction. */
+    uint32_t vr_model; unsigned vr_polygon; /* Track-face provenance for repaired detail. */
+    int vr_car; /* Diagnostic provenance: 1-based car assembly, zero for other geometry. */
 #endif
 } hle_polygon_t;
 
@@ -149,10 +150,13 @@ typedef struct {
     int decal_first, skid_first;
     unsigned skid_count, skid_total, skid_cars[16];
     float native_pitch, native_roll, car_length;
-    float car_lowering[3]; /* camera-space vector, in world units */
+    float car_lowering[16][3]; /* per-assembly camera-space translation, world units */
     hle_vr_vertex_t vertices[HLE_VR_MAX_VERTICES];
 } hle_vr_mesh_t;
 const hle_vr_mesh_t *hle_vr_prepare(double fraction);
+/* Diagnostic reconstruction of an explicitly repaired track polygon; zero means
+   unchanged, negative means insufficient caller capacity. */
+int hle_vr_repaired_polygon(uint32_t model,unsigned polygon,hle_vr_vertex_t *out,int capacity);
 #endif
 
 #endif

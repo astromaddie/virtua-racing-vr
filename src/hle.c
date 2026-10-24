@@ -68,10 +68,19 @@ static int32_t divide(int64_t dividend, int32_t divisor)
 static uint8_t scene[HLE_SCENE_SIZE];
 #ifdef VRDE_VR
 static int vr_collect, vr_car, vr_car_record;
+static uint32_t vr_track_model;static unsigned vr_track_polygon;
 static hle_vr_mesh_t vr_mesh;
 static int vr_decal_vertices;
 static int vr_road_cell(uint32_t model);
 static int vr_road_decal(int cell, unsigned polygon);
+static void vr_car_contacts(void);
+#define SURFACE_TRIANGLES 16384
+#define SURFACE_REPLACEMENTS 4096
+struct surface_triangle { vr_skid_point p[3]; int decal; };
+static struct surface_triangle surface_triangles[SURFACE_TRIANGLES];
+static struct { unsigned polygon,first,count; } surface_replacements[SURFACE_REPLACEMENTS];
+static unsigned surface_triangle_count,surface_replacement_count;
+static int vr_surface_replacement(int cell,unsigned polygon);
 #endif
 
 static uint16_t scene_word(int offset)
@@ -1054,6 +1063,7 @@ static void emit(geometry_t *g, uint16_t header, int vertex_count)
 	polygon->drawn_with = drawn_with;
 #ifdef VRDE_VR
     polygon->vr_car=vr_car_record;
+    polygon->vr_model=vr_track_model;polygon->vr_polygon=vr_track_polygon;
 #endif
 	for (int n = 0; n < vertex_count; n++) {
 		polygon->x[n] = slot(g, n)->sx;
@@ -1197,8 +1207,21 @@ static void load_polygon(geometry_t *g, uint16_t header, uint32_t *model, int wi
 }
 
 #ifdef VRDE_VR
-static void vr_polygon(geometry_t *g, uint16_t header, int corners, int decal)
+static void vr_polygon(geometry_t *g, uint16_t header, int corners, int decal,int replacement)
 {
+    if(replacement>=0) {
+        vertex_t saved[4];memcpy(saved,g->slots,sizeof saved);
+        unsigned first=surface_replacements[replacement].first,end=first+surface_replacements[replacement].count;
+        for(unsigned i=first;i<end;i++) {
+            const struct surface_triangle *triangle=&surface_triangles[i];
+            for(int k=0;k<3;k++) {
+                const vr_skid_point *p=&triangle->p[k];double local[3]={p->x/16.,p->y/16.,p->z/16.};
+                transform_exact_vector(&g->matrix,local,&g->slots[k]);
+            }
+            vr_polygon(g,header,3,triangle->decal,-1);
+        }
+        memcpy(g->slots,saved,sizeof saved);return;
+    }
     uint16_t colour = (header & 0x20) ? lit_colour(g, g->colour) : g->colour;
     for (int i = 1; i < corners - 1; i++) {
         if (vr_mesh.count + vr_decal_vertices + 3 > HLE_VR_MAX_VERTICES) { vr_mesh.overflow = 1; return; }
@@ -1221,7 +1244,8 @@ static void vr_polygon(geometry_t *g, uint16_t header, int corners, int decal)
 static void draw_model(geometry_t *g, uint32_t model)
 {
 #ifdef VRDE_VR
-    int road_cell = vr_collect && g->vertex_shift == 11 ? vr_road_cell(model) : -1;
+    vr_track_model=g->vertex_shift==11?model:0;
+    int road_cell = vr_collect && vr_track_model ? vr_road_cell(model) : -1;
     unsigned polygon = 0;
 #endif
 	int vertex_count = sh2_word(model);
@@ -1239,7 +1263,11 @@ static void draw_model(geometry_t *g, uint32_t model)
 
 		int corners = (header & 1) ? 3 : 4;
 #ifdef VRDE_VR
-        if (vr_collect) { vr_polygon(g, header, corners, vr_road_decal(road_cell, polygon++)); continue; }
+        vr_track_polygon=polygon++;
+        if (vr_collect) {
+            vr_polygon(g,header,corners,vr_road_decal(road_cell,vr_track_polygon),vr_surface_replacement(road_cell,vr_track_polygon));
+            continue;
+        }
 #endif
 		int behind;
 		if (outcode(g, corners, &behind))
@@ -1262,15 +1290,13 @@ static void draw_records(geometry_t *g, int first, int count)
 		g->extra = record_extra[record_index(record)];
 		#ifdef VRDE_VR
         vr_car=record==PLAYER_CAR;
-        vr_car_record=record>=PLAYER_CAR && record<ROADSIDE;
-        /* The original car pivot leaves tyres roughly four world units above
-           the road. Move the complete visual assembly in world Y, including
-           cockpit children/effects, without changing camera or physical poses.
-           A constant pivot correction retains every jump/suspension delta. */
-        if (vr_collect && vr_car_record) {
-            matrix_t view = view_matrix();
-            for (int axis=0;axis<3;axis++) g->matrix.f[axis][3] -= view.f[axis][1] * (4.0/16);
-        }
+        vr_car_record=record>=PLAYER_CAR && record<ROADSIDE ?
+            (record<OPPONENTS?1:2+(record-OPPONENTS)/OPPONENT_SIZE):0;
+        /* One support-limited translation for the complete assembly. */
+        if (vr_collect && vr_car_record)
+            for (int axis=0;axis<3;axis++)
+                g->matrix.f[axis][3] -= vr_mesh.car_lowering[vr_car_record-1][axis]/16;
+
 #endif
         draw_model(g, scene_long(record + MODEL));
 #ifdef VRDE_VR
@@ -1970,6 +1996,9 @@ static int build(int command, hle_frame_t *frame)
 		far_props();
 	}
 	build_matrices();
+#ifdef VRDE_VR
+    if(vr_collect)vr_car_contacts();
+#endif
 	sort_track_segments();
 	master_geometry();
 	slave_geometry();
@@ -2117,10 +2146,19 @@ static struct {
     vr_skid_point p[3];
 } skid_roads[SKID_ROAD_CAPACITY];
 static struct {
-    unsigned first, count;
+    unsigned first, count,surface_first,surface_count;
     int loaded;
     uint8_t decals[2048/4]; /* two triangle bits per polygon */
 } skid_cells[1024];
+/* Wheel topology is stable within a race. Separate connected tyres rather than
+   averaging the hubs of a two-tyre axle when deciding what is beneath a wheel. */
+static struct wheel_model {
+    uint32_t address;
+    int count,groups;
+    uint8_t group[128];
+    double hub[4][3];
+} wheel_models[32];
+static unsigned wheel_model_count;
 static unsigned skid_road_count;
 static uint32_t skid_grid;
 static int skid_cached_scene = -1;
@@ -2129,7 +2167,55 @@ static void skid_reset(void)
 {
     vr_skids_reset(&skid_marks);
     memset(skid_cells, 0, sizeof(skid_cells));
-    skid_road_count=0; skid_grid=0; skid_cached_scene=-1;
+    skid_road_count=0; skid_grid=0; skid_cached_scene=-1;wheel_model_count=0;
+    surface_triangle_count=surface_replacement_count=0;
+}
+
+static int surface_store(int cell,unsigned polygon,const struct surface_triangle *triangles,unsigned count)
+{
+    if(!count||surface_replacement_count==SURFACE_REPLACEMENTS||count>SURFACE_TRIANGLES-surface_triangle_count)return 0;
+    unsigned entry=surface_replacement_count++;
+    surface_replacements[entry].polygon=polygon;surface_replacements[entry].first=surface_triangle_count;
+    surface_replacements[entry].count=count;
+    memcpy(surface_triangles+surface_triangle_count,triangles,count*sizeof(*triangles));
+    surface_triangle_count+=count;skid_cells[cell].surface_count++;return 1;
+}
+static int surface_fan(const vr_surface_polygon *p,int decal,struct surface_triangle *out,int *count)
+{
+    for(int i=1;i<p->count-1;i++) {
+        vr_skid_point a=p->p[0],b=p->p[i],c=p->p[i+1];
+        double nx=(b.y-a.y)*(c.z-a.z)-(b.z-a.z)*(c.y-a.y);
+        double ny=(b.z-a.z)*(c.x-a.x)-(b.x-a.x)*(c.z-a.z);
+        double nz=(b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x);
+        if(nx*nx+ny*ny+nz*nz<1e-8)continue;
+        if(*count==256)return 0;
+        out[(*count)++]=(struct surface_triangle){{p->p[0],p->p[i],p->p[i+1]},decal};
+    }
+    return 1;
+}
+/* Piecewise projection preserves the authored footprint and leaves everything
+   outside the actual asphalt untouched. No per-eye work or unbounded allocation. */
+static int surface_road_pieces(const vr_skid_point *p,int corners,int original_bits,
+                              unsigned first,unsigned count,struct surface_triangle out[256])
+{
+    int triangles=0,projected=0;
+    for(int triangle=1;triangle<corners-1;triangle++) {
+        vr_surface_polygon pending[32],next[32];int n=1;
+        pending[0]=(vr_surface_polygon){{p[0],p[triangle],p[triangle+1]},3};
+        for(unsigned road=first;road<first+count&&n;road++) {
+            int m=0;
+            for(int i=0;i<n;i++) {
+                vr_surface_polygon pieces[4];int parts=vr_surface_project(&pending[i],skid_roads[road].p,pieces);
+                if(parts) {
+                    projected=1;if(!surface_fan(&pieces[0],1,out,&triangles))return 0;
+                    for(int j=1;j<parts;j++){if(m==32)return 0;next[m++]=pieces[j];}
+                } else {if(m==32)return 0;next[m++]=pending[i];}
+            }
+            n=m;memcpy(pending,next,n*sizeof(*pending));
+        }
+        for(int i=0;i<n;i++)if(!surface_fan(&pending[i],(original_bits>>(triangle-1))&1,out,&triangles))return 0;
+    }
+    return projected?triangles:0;
 }
 
 /* Lazy per-cell decoding: asphalt's grey indices 12/13/14. Material 14 is
@@ -2141,6 +2227,7 @@ static void skid_load_cell(int cell)
     if (cell<0 || cell>=1024 || skid_cells[cell].loaded) return;
     skid_cells[cell].loaded=1;
     skid_cells[cell].first=skid_road_count;
+    skid_cells[cell].surface_first=surface_replacement_count;
     uint32_t model=grid_cell(skid_grid,cell);
     if (model==GRID_EMPTY) return;
     int vertices=sh2_word(model); model+=4;
@@ -2175,11 +2262,24 @@ static void skid_load_cell(int cell)
        Edge paint can straddle the road boundary. Adjacent grass merely sharing
        an edge, raised kerbs, walls and all object meshes remain ordinary geometry.
        Decode once per model/cell, never once per eye or display frame. */
+    enum { SURFACE_FACES=256 }; /* ROM maximum is 136; oversized models fail closed. */
+    struct face { vr_skid_point p[4]; unsigned colour; int count,vertical; };
+    static struct face faces[SURFACE_FACES];
+    unsigned face_count=0;int faces_complete=0;
     model=polygons;
     for (unsigned polygon=0;polygon<2048;polygon++) {
         uint16_t header=sh2_word(model);model+=2;
-        if (((header>>8)&14)==12) break;
+        if (((header>>8)&14)==12) {faces_complete=1;break;}
         load_polygon(&g,header,&model,1);
+        if(polygon<SURFACE_FACES) {
+            struct face *f=&faces[face_count++];f->count=(header&1)?3:4;f->colour=g.colour;
+            for(int k=0;k<f->count;k++)f->p[k]=(vr_skid_point){g.slots[k].fx,g.slots[k].fy,g.slots[k].fz};
+            vr_skid_point a=f->p[0],b=f->p[1],c=f->p[2];
+            double nx=(b.y-a.y)*(c.z-a.z)-(b.z-a.z)*(c.y-a.y);
+            double ny=(b.z-a.z)*(c.x-a.x)-(b.x-a.x)*(c.z-a.z);
+            double nz=(b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x);
+            f->vertical=ny*ny<.64*(nx*nx+ny*ny+nz*nz);
+        }
         unsigned material=g.colour>>8;
         if (material>=12 && material<=14) continue;
         int corners=(header&1)?3:4;
@@ -2193,6 +2293,160 @@ static void skid_load_cell(int cell)
                 }
         }
     }
+    /* Original painter ordering also carries wall/door shading. Only a smaller
+       face actually contained on a larger face's plane enters the overlay pass;
+       adjacent walls, silhouettes and protruding geometry keep ordinary depth. */
+    if(faces_complete&&face_count<SURFACE_FACES)
+        for(unsigned i=0;i<face_count;i++)if(faces[i].vertical)
+            for(unsigned j=0;j<face_count;j++)if(faces[j].vertical&&faces[i].colour!=faces[j].colour&&
+                vr_surface_detail(faces[i].p,faces[i].count,faces[j].p,faces[j].count)) {
+                struct surface_triangle triangles[2];
+                for(int k=1;k<faces[i].count-1;k++) {
+                    int ix[3]={0,k,k+1};triangles[k-1].decal=1;
+                    for(int v=0;v<3;v++)triangles[k-1].p[v]=vr_surface_on_plane(faces[i].p[ix[v]],faces[j].p);
+                }
+                surface_store(cell,i,triangles,faces[i].count-2);
+                skid_cells[cell].decals[i/4]|=((1u<<(faces[i].count-2))-1)<<(2*(i%4));
+                break;
+            }
+    if(faces_complete&&face_count<SURFACE_FACES) {
+        static struct surface_triangle pieces[256];
+        for(unsigned i=0;i<face_count;i++) {
+            unsigned material=faces[i].colour>>8;
+            int bits=vr_road_decal(cell,i);
+            if((material>=12&&material<=14)||faces[i].vertical||bits==(1<<(faces[i].count-2))-1)continue;
+            int count=surface_road_pieces(faces[i].p,faces[i].count,bits,
+                skid_cells[cell].first,skid_cells[cell].count,pieces);
+            if(count)surface_store(cell,i,pieces,count);
+        }
+    }
+}
+
+static const struct wheel_model *vr_wheel_model(uint32_t address)
+{
+    for(unsigned i=0;i<wheel_model_count;i++)if(wheel_models[i].address==address)return &wheel_models[i];
+    int count=sh2_word(address);
+    if(count<1||count>128||wheel_model_count==32)return NULL;
+    struct wheel_model *wheel=&wheel_models[wheel_model_count++];
+    memset(wheel,0,sizeof(*wheel));wheel->address=address;wheel->count=count;
+    unsigned parent[128],used[128]={0};
+    static geometry_t g;memset(&g,0,sizeof g);
+    for(int i=0;i<count;i++){parent[i]=i;g.vertices[i].x=i;}
+    uint32_t model=address+4+6*count;int complete=0;
+    for(int polygon=0;polygon<256;polygon++) {
+        unsigned header=sh2_word(model);model+=2;
+        if(((header>>8)&14)==12){complete=1;break;}
+        load_polygon(&g,header,&model,1);
+        unsigned root=g.slots[0].x;
+        if(root>=(unsigned)count)return NULL;
+        while(parent[root]!=root)root=parent[root];
+        for(int k=0;k<((header&1)?3:4);k++) {
+            unsigned v=g.slots[k].x;if(v>=(unsigned)count)return NULL;used[v]=1;
+            while(parent[v]!=v)v=parent[v];parent[v]=root;
+        }
+    }
+    if(!complete)return NULL;
+    /* Tyre treads, sidewalls and hubs can be separate indexed shells. Merge
+       shells whose actual bounds touch/overlap; the empty space between the
+       two tyres of an axle keeps their support hubs distinct. */
+    double shell_lo[128][3],shell_hi[128][3];
+    for(int i=0;i<count;i++)for(int a=0;a<3;a++){shell_lo[i][a]=INFINITY;shell_hi[i][a]=-INFINITY;}
+    for(int i=0;i<count;i++)if(used[i]) {
+        unsigned root=i;while(parent[root]!=root)root=parent[root];
+        for(int a=0;a<3;a++) {
+            double v=sh2_signed_word(address+4+6*i+2*a);
+            shell_lo[root][a]=fmin(shell_lo[root][a],v);shell_hi[root][a]=fmax(shell_hi[root][a],v);
+        }
+    }
+    int merged;
+    do {
+        merged=0;
+        for(int i=0;i<count;i++)if(isfinite(shell_lo[i][0]))
+            for(int j=i+1;j<count;j++)if(isfinite(shell_lo[j][0])) {
+                int overlap=1;
+                for(int a=0;a<3;a++)if(shell_hi[i][a]<shell_lo[j][a]||shell_hi[j][a]<shell_lo[i][a])overlap=0;
+                /* The rear hubcaps are authored two vertex quanta outside the
+                   tread. Coaxial shells separated by less than their radial
+                   diameter belong to one tyre, not the tyre across the axle. */
+                int coaxial=1;
+                for(int a=1;a<3;a++)if(fabs(shell_hi[i][a]+shell_lo[i][a]-shell_hi[j][a]-shell_lo[j][a])>2)coaxial=0;
+                double gap=fmax(shell_lo[j][0]-shell_hi[i][0],shell_lo[i][0]-shell_hi[j][0]);
+                double diameter=fmin(fmax(shell_hi[i][1]-shell_lo[i][1],shell_hi[i][2]-shell_lo[i][2]),
+                                     fmax(shell_hi[j][1]-shell_lo[j][1],shell_hi[j][2]-shell_lo[j][2]));
+                if(!overlap&&!(coaxial&&gap<diameter))continue;
+                parent[j]=i;merged=1;
+                for(int a=0;a<3;a++) {
+                    shell_lo[i][a]=fmin(shell_lo[i][a],shell_lo[j][a]);
+                    shell_hi[i][a]=fmax(shell_hi[i][a],shell_hi[j][a]);shell_lo[j][a]=INFINITY;
+                }
+            }
+    } while(merged);
+    unsigned roots[4];double lo[4][3],hi[4][3];
+    for(int i=0;i<count;i++) {
+        wheel->group[i]=255;if(!used[i])continue;
+        unsigned root=i;while(parent[root]!=root)root=parent[root];
+        int group=0;while(group<wheel->groups&&roots[group]!=root)group++;
+        if(group==wheel->groups) {
+            if(group==4){wheel->groups=0;return NULL;}
+            roots[group]=root;wheel->groups++;
+            for(int a=0;a<3;a++){lo[group][a]=INFINITY;hi[group][a]=-INFINITY;}
+        }
+        wheel->group[i]=group;
+        for(int a=0;a<3;a++) {
+            double v=sh2_signed_word(address+4+6*i+2*a)/1024.;
+            lo[group][a]=fmin(lo[group][a],v);hi[group][a]=fmax(hi[group][a],v);
+        }
+    }
+    for(int i=0;i<wheel->groups;i++)for(int a=0;a<3;a++)wheel->hub[i][a]=(lo[i][a]+hi[i][a])*.5;
+    return wheel;
+}
+
+/* Evaluate the rendered wheel geometry at this interpolated pose. The road may
+   rise under a tyre even when the game's body pitch/roll has not caught up.
+   Limit the nominal lowering by every supporting contact; never pull an airborne
+   car onto the road or treat an overhead deck as its receiving surface. */
+static void vr_car_contacts(void)
+{
+    matrix_t view=view_matrix();
+    for(int car=0;car<16;car++) {
+        int body=car?OPPONENTS+(car-1)*OPPONENT_SIZE:PLAYER_CAR;
+        float lowering=4;
+        if(skid_grid&&field(body,FLAG))for(int part=1;part<=(car?2:3);part++) {
+            int record=body+part*RECORD_SIZE;if(!field(record,FLAG))continue;
+            uint32_t model=scene_long(record+MODEL);
+            const struct wheel_model *shape=vr_wheel_model(model);if(!shape)continue;
+            const matrix_t *m=&object_matrix[record_index(record)];
+            for(int group=0;group<shape->groups;group++) {
+                vr_skid_point wheel[128],centre={0};int count=0;
+                for(int i=-1;i<shape->count;i++) {
+                    if(i>=0&&shape->group[i]!=group)continue;
+                    double local[3];
+                    for(int a=0;a<3;a++)local[a]=i<0?shape->hub[group][a]:sh2_signed_word(model+4+6*i+2*a)/1024.;
+                    double camera[3],world[3]={0};
+                    for(int a=0;a<3;a++)camera[a]=exact_dot3(m->f[a],local)+m->f[a][3]-view.f[a][3];
+                    for(int a=0;a<3;a++)for(int b=0;b<3;b++)world[a]+=view.f[b][a]*camera[b]*16;
+                    vr_skid_point point={world[0],world[1],world[2]};
+                    if(i<0)centre=point;else wheel[count++]=point;
+                }
+                int column=16+(int)floorf(centre.x/1024),row=15-(int)floorf(centre.z/1024);
+                for(int y=row-1;y<=row+1;y++)for(int x=column-1;x<=column+1;x++) {
+                    if(x<0||x>=32||y<0||y>=32)continue;
+                    int cell=y*32+x;skid_load_cell(cell);
+                    for(unsigned i=skid_cells[cell].first;i<skid_cells[cell].first+skid_cells[cell].count;i++)
+                        lowering=fminf(lowering,vr_road_clearance(wheel,count,centre,skid_roads[i].p));
+                }
+            }
+        }
+        for(int axis=0;axis<3;axis++)vr_mesh.car_lowering[car][axis]=view.f[axis][1]*lowering;
+    }
+}
+
+static int vr_surface_replacement(int cell,unsigned polygon)
+{
+    if(cell<0)return -1;
+    unsigned first=skid_cells[cell].surface_first,end=first+skid_cells[cell].surface_count;
+    for(unsigned i=first;i<end;i++)if(surface_replacements[i].polygon==polygon)return i;
+    return -1;
 }
 
 static int vr_road_cell(uint32_t model)
@@ -2203,6 +2457,22 @@ static int vr_road_cell(uint32_t model)
 }
 static int vr_road_decal(int cell, unsigned polygon)
 { return cell>=0 && polygon<2048 ? (skid_cells[cell].decals[polygon/4]>>(2*(polygon%4)))&3 : 0; }
+
+int hle_vr_repaired_polygon(uint32_t model,unsigned polygon,hle_vr_vertex_t *out,int capacity)
+{
+    int replacement=vr_surface_replacement(vr_road_cell(model),polygon);
+    if(replacement<0)return 0;
+    unsigned first=surface_replacements[replacement].first,count=surface_replacements[replacement].count;
+    if(count*3>(unsigned)capacity)return -1;
+    matrix_t view=view_matrix();
+    for(unsigned i=0;i<count;i++)for(int j=0;j<3;j++) {
+        const vr_skid_point *p=&surface_triangles[first+i].p[j];
+        double local[3]={p->x/16.,p->y/16.,p->z/16.};vertex_t v;
+        transform_exact_vector(&view,local,&v);
+        out[3*i+j]=(hle_vr_vertex_t){v.fx*16,v.fy*16,v.fz*16,0};
+    }
+    return count*3;
+}
 
 static void skid_project(void *user, const vr_skid_point q[4], unsigned colour)
 {
@@ -2404,8 +2674,6 @@ const hle_vr_mesh_t *hle_vr_prepare(double fraction)
     vr_mesh.scene = scenes_taken;
     vr_mesh.native_pitch = exact_word[(CAMERA + ANGLE_X)/2] * (2*M_PI/8192);
     vr_mesh.native_roll = exact_word[(CAMERA + ANGLE_Z)/2] * (2*M_PI/8192);
-    matrix_t view=view_matrix();
-    for(int axis=0;axis<3;axis++)vr_mesh.car_lowering[axis]=view.f[axis][1]*4;
     int saved_far = far_view;
     far_view = 1;
     vr_collect = 1;

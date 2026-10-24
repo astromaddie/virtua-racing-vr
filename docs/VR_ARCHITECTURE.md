@@ -93,27 +93,39 @@ writes disabled. This retains road/car/prop occlusion while preventing overlays
 from fighting the asphalt or one another. Depth writes and polygon-offset state
 are restored after the pass. Both passes use the same immutable vertex buffer.
 
-A lazy per-course cache identifies track triangles with positive-area overlap
-on an asphalt triangle's plane. Paint can straddle an asphalt edge; adjacent
-terrain sharing only an edge, raised kerbs and vertical faces do not qualify.
-Object/car meshes are never classified as road detail. Material colours and
-painter-sort header bits alone are insufficient. The classification is cached
-once per track model, shares the bounded road cache, and fails closed on overflow.
+A lazy per-course cache identifies track detail against actual receiving faces.
+Near-road paint is split at asphalt triangle boundaries: overlapping pieces follow
+the receiver plane, while outside pieces retain their authored geometry. This
+repairs quantized paint that intersects a bank or spans different road facets.
+Smaller contained wall details with anchored coplanar corners likewise follow
+their planar wall, including garage insets with a half-unit warped corner.
+Adjacent walls, silhouettes, raised panels and object meshes retain ordinary
+depth. Material colours and painter-sort header bits alone are insufficient.
+The fixed caches hold at most 16,384 replacement triangles and 4,096 polygon
+entries; oversized or overflowing repairs retain the original geometry.
 
-Original rotating tyre meshes sit roughly four world units above the rendered
-road for all three car kinds. VR lowers the complete car assembly, including
-children and car-relative effects, by four world units along world Y. This is a
-constant visual pivot correction: physical poses, camera placement, wheel spin,
-suspension and airborne displacement remain intact. The independent projection
-check uses car provenance and this explicit transform rather than relaxing its
-error tolerance. Flat rendering receives neither correction.
+Car placement uses actual transformed, rendered tyre vertices and nearby asphalt
+triangles at the display interpolation fraction. Each tyre has its own hub; tyre
+shells and hubcaps are grouped without merging the two sides of an axle. The
+nominal four-world-unit pivot correction is limited by the minimum tyre/road
+clearance, and raises an already intersecting assembly only enough to clear its
+support. Supports above a tyre hub, vertical walls and overhead decks are rejected.
+All body parts and car-relative effects receive the same world-Y translation.
+Unsupported cars retain the nominal correction, and airborne displacement is not
+pulled onto a distant road. Physical poses, camera placement, wheel spin and
+suspension remain intact. Flat rendering receives neither correction.
 
-`build/vr_surface_rom_test ROM [0|1|2]` exercises all car kinds and pitched/rolled
-poses through the real record renderer, and checks overlay coverage on all five
-course grids. `build/vr_surface_gl_test --vr-diagnostic ... ROM` uses the real
-production eye callback at 24 nearby poses, comparing its bias to disabled and
-stronger bias while checking state restoration and ordinary depth occlusion.
-It requires a GL implementation supporting the exact configured sample count.
+The independent projection check uses explicit per-car translation and repaired
+polygon provenance, retaining strict original-corner matching elsewhere.
+`build/vr_surface_rom_test ROM [0|1|2]` measures emitted tyre vertices against road
+planes for all car kinds and pitched/rolled interpolated poses, checks complete
+assembly rigidity, and verifies repaired footprint areas and receiver planes on
+all five grids. `build/vr_surface_gl_test --vr-diagnostic ... ROM` uses the real
+production eye callback at 24 nearby poses, including an isolated persistent-mark
+layer, comparing normal, disabled and stronger bias while checking state
+restoration and ordinary depth occlusion. Test-only `VRDE_SURFACE_YAW/X/Y/Z`
+select an authenticated track detail view. The test requires a GL implementation
+supporting the exact configured sample count.
 
 ## Persistent tyre marks
 
